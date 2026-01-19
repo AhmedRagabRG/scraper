@@ -17,7 +17,7 @@ curl -X POST "http://localhost:8000/scrape" \
 ### 1b. Start Scraping Job with Webhook
 
 ```bash
-curl -X POST "http://localhost:8000/scrape" \
+curl -X POST "http://76.13.4.185:8000/scrape" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "Coffee Shops in Cairo",
@@ -64,6 +64,37 @@ curl http://localhost:8000/jobs | jq
 
 ```bash
 curl -X DELETE http://localhost:8000/job/abc123
+```
+
+---
+
+### 7. ✨ Scrape Reviews from Google Maps Place
+
+```bash
+curl -X POST "http://localhost:8000/scrape-reviews" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "maps_url": "https://www.google.com/maps/place/OBI/@53.6277929,14.0120623,1278m/data=!3m1!1e3...",
+    "max_reviews": 100,
+    "headless": true,
+    "webhook_url": "https://your-webhook.com/endpoint"
+  }'
+```
+
+**Response:**
+```json
+{
+  "job_id": "xyz789",
+  "status": "pending",
+  "message": "Reviews scraping job started. Results will be sent to your webhook."
+}
+```
+
+**CSV Output:**
+```csv
+reviewer_name,review_date,rating,review_text,pictures,company_reply
+Ahmed Mohamed,2 weeks ago,5,"Great service!",yes,"Thank you!"
+Sara Ali,1 month ago,4,"Good quality",no,no
 ```
 
 ---

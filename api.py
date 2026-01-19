@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 import pandas as pd
 
 from scraper import scrape_google_maps
+from reviews_scraper import scrape_google_maps_reviews
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -33,6 +34,13 @@ jobs: Dict[str, Dict] = {}
 class ScrapeRequest(BaseModel):
     query: str = Field(..., description="Search query (e.g., 'Coffee Shops in Cairo')")
     max_results: Optional[int] = Field(None, description="Maximum number of results to scrape")
+    headless: bool = Field(True, description="Run browser in headless mode")
+    webhook_url: Optional[str] = Field(None, description="Webhook URL to send results when completed")
+
+
+class ReviewsRequest(BaseModel):
+    maps_url: str = Field(..., description="Google Maps place URL")
+    max_reviews: Optional[int] = Field(None, description="Maximum number of reviews to scrape")
     headless: bool = Field(True, description="Run browser in headless mode")
     webhook_url: Optional[str] = Field(None, description="Webhook URL to send results when completed")
 
@@ -181,6 +189,81 @@ async def run_scraper(job_id: str, query: str, max_results: Optional[int], headl
                 pass
 
 
+async def run_reviews_scraper(job_id: str, maps_url: str, max_reviews: Optional[int], headless: bool, webhook_url: Optional[str] = None):
+    """Background task to run the reviews scraper."""
+    try:
+        jobs[job_id]['status'] = 'running'
+        jobs[job_id]['progress'] = 'Starting reviews scraper...'
+        
+        # Run reviews scraper
+        results = await scrape_google_maps_reviews(
+            maps_url=maps_url,
+            headless=headless,
+            max_reviews=max_reviews
+        )
+        
+        if results:
+            # Save to CSV
+            output_path = generate_output_filename(job_id)
+            
+            # Create DataFrame with specific columns
+            df = pd.DataFrame(results)
+            column_order = [
+                'reviewer_name',
+                'review_date',
+                'rating',
+                'review_text',
+                'pictures',
+                'company_reply'
+            ]
+            available_columns = [col for col in column_order if col in df.columns]
+            df = df[available_columns]
+            df.to_csv(output_path, index=False, encoding='utf-8-sig')
+            
+            jobs[job_id]['status'] = 'completed'
+            jobs[job_id]['total_results'] = len(results)
+            jobs[job_id]['completed_at'] = datetime.now().isoformat()
+            jobs[job_id]['download_url'] = f"/download/{job_id}"
+            jobs[job_id]['progress'] = f'Completed! {len(results)} reviews extracted'
+            
+            # Send webhook if URL provided
+            if webhook_url:
+                jobs[job_id]['progress'] = 'Sending webhook...'
+                webhook_sent = await send_webhook(webhook_url, job_id, results, 'completed')
+                jobs[job_id]['webhook_sent'] = webhook_sent
+                if webhook_sent:
+                    jobs[job_id]['progress'] = f'Completed! {len(results)} reviews (webhook sent)'
+                else:
+                    jobs[job_id]['progress'] = f'Completed! {len(results)} reviews (webhook failed)'
+        else:
+            jobs[job_id]['status'] = 'completed'
+            jobs[job_id]['total_results'] = 0
+            jobs[job_id]['completed_at'] = datetime.now().isoformat()
+            jobs[job_id]['progress'] = 'No reviews found'
+            
+            if webhook_url:
+                await send_webhook(webhook_url, job_id, [], 'completed')
+            
+    except Exception as e:
+        jobs[job_id]['status'] = 'failed'
+        jobs[job_id]['error'] = str(e)
+        jobs[job_id]['completed_at'] = datetime.now().isoformat()
+        
+        # Send webhook with error status
+        if webhook_url:
+            try:
+                error_payload = {
+                    "job_id": job_id,
+                    "status": "failed",
+                    "error": str(e),
+                    "completed_at": datetime.now().isoformat()
+                }
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    await client.post(webhook_url, json=error_payload)
+            except:
+                pass
+
+
 @app.get("/")
 async def root():
     """Root endpoint with API information."""
@@ -189,6 +272,7 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "POST /scrape": "Start a new scraping job",
+            "POST /scrape-reviews": "Scrape reviews from a Google Maps place URL",
             "GET /status/{job_id}": "Get job status",
             "GET /download/{job_id}": "Download results as CSV",
             "GET /results/{job_id}": "Get results as JSON",
@@ -238,6 +322,60 @@ async def scrape(request: ScrapeRequest, background_tasks: BackgroundTasks):
     )
     
     message = f"Scraping job started. Use /status/{job_id} to check progress."
+    if request.webhook_url:
+        message += f" Results will be sent to your webhook."
+    
+    return ScrapeResponse(
+        job_id=job_id,
+        status="pending",
+        message=message
+    )
+
+
+@app.post("/scrape-reviews", response_model=ScrapeResponse)
+async def scrape_reviews(request: ReviewsRequest, background_tasks: BackgroundTasks):
+    """
+    Scrape reviews from a Google Maps place URL.
+    
+    - **maps_url**: Full Google Maps place URL (e.g., https://www.google.com/maps/place/...)
+    - **max_reviews**: Maximum number of reviews to scrape (optional, default: all)
+    - **headless**: Run browser in headless mode (default: true)
+    - **webhook_url**: Webhook URL to send results when completed (optional)
+    
+    Returns CSV with columns:
+    - reviewer_name: Name of the reviewer
+    - review_date: Date of the review
+    - rating: Star rating (1-5)
+    - review_text: The review comment
+    - pictures: "yes" if review has pictures, "no" otherwise
+    - company_reply: Company's response or "no" if no reply
+    """
+    # Generate unique job ID
+    job_id = str(uuid.uuid4())[:8]
+    
+    # Store job info
+    jobs[job_id] = {
+        'job_id': job_id,
+        'status': 'pending',
+        'type': 'reviews',
+        'maps_url': request.maps_url,
+        'max_reviews': request.max_reviews,
+        'webhook_url': request.webhook_url,
+        'created_at': datetime.now().isoformat(),
+        'progress': 'Job created, waiting to start...'
+    }
+    
+    # Add reviews scraper task to background
+    background_tasks.add_task(
+        run_reviews_scraper,
+        job_id=job_id,
+        maps_url=request.maps_url,
+        max_reviews=request.max_reviews,
+        headless=request.headless,
+        webhook_url=request.webhook_url
+    )
+    
+    message = f"Reviews scraping job started. Use /status/{job_id} to check progress."
     if request.webhook_url:
         message += f" Results will be sent to your webhook."
     
