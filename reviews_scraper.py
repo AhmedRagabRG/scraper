@@ -132,6 +132,88 @@ class GoogleMapsReviewsScraper:
             print(f"⚠️ Error clicking reviews tab: {e}")
             return False
 
+    async def _sort_by_lowest_rating(self):
+        """Sort reviews by lowest rating first."""
+        try:
+            print("🔽 Sorting reviews by lowest rating...")
+            await asyncio.sleep(2)
+            
+            # Try to find and click the sort button/dropdown
+            sort_selectors = [
+                'button[aria-label*="Sort"]',
+                'button[aria-label*="sort"]',
+                'button[data-value*="Sort"]',
+                'button:has-text("Sort")',
+                'button:has-text("Most relevant")',
+                'button.e2moi',  # Common sort button class
+            ]
+            
+            sort_clicked = False
+            for selector in sort_selectors:
+                try:
+                    sort_button = await self.page.wait_for_selector(selector, timeout=3000)
+                    if sort_button:
+                        await sort_button.scroll_into_view_if_needed()
+                        await asyncio.sleep(0.5)
+                        await self.page.evaluate('(btn) => btn.click()', sort_button)
+                        print(f"✓ Clicked sort button using: {selector}")
+                        await asyncio.sleep(2)
+                        sort_clicked = True
+                        break
+                except:
+                    continue
+            
+            if not sort_clicked:
+                print("⚠️ Could not find sort button, continuing with default sort")
+                return False
+            
+            # Now try to click "Lowest rating" option
+            lowest_rating_selectors = [
+                'div[role="menuitemradio"][data-index="3"]',  # Usually the 4th option (0-indexed)
+                'div[role="menuitemradio"]:has-text("Lowest")',
+                'div[role="menuitemradio"][aria-label*="Lowest"]',
+                'li:has-text("Lowest rating")',
+                'div:has-text("Lowest rating")',
+                '[data-value="4"]',  # Alternative data attribute
+            ]
+            
+            lowest_clicked = False
+            for selector in lowest_rating_selectors:
+                try:
+                    option = await self.page.wait_for_selector(selector, timeout=2000)
+                    if option:
+                        await self.page.evaluate('(opt) => opt.click()', option)
+                        print(f"✓ Selected 'Lowest rating' using: {selector}")
+                        await asyncio.sleep(3)
+                        lowest_clicked = True
+                        break
+                except:
+                    continue
+            
+            if not lowest_clicked:
+                print("⚠️ Could not select 'Lowest rating' option")
+                # Close the dropdown by pressing Escape
+                try:
+                    await self.page.keyboard.press('Escape')
+                    await asyncio.sleep(1)
+                    print("✓ Closed sort dropdown, continuing with default sort")
+                except:
+                    pass
+                return False
+            
+            print("✓ Successfully sorted by lowest rating")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ Error sorting reviews: {e}")
+            # Try to close any open dropdown
+            try:
+                await self.page.keyboard.press('Escape')
+                await asyncio.sleep(1)
+            except:
+                pass
+            return False
+
     async def _scroll_reviews(self, max_reviews: Optional[int] = None):
         """Scroll through reviews to load more."""
         print("📜 Scrolling through reviews...")
@@ -155,23 +237,45 @@ class GoogleMapsReviewsScraper:
             except:
                 pass
             
-            # Try multiple selectors for reviews - expanded list
+            # Try multiple selectors for reviews - expanded and prioritized list
             review_selectors = [
-                'div[data-review-id]',
-                'div.jftiEf',
-                'div[jsaction*="review"]',
-                'div.fontBodyMedium',
-                'div[class*="review"]',
-                'div[aria-label*="review"]',
-                'div.GHT2ce',
-                'div.MyEned',
+                'div[data-review-id]',  # Most reliable
+                'div.jftiEf',  # Common review container
+                'div[jsaction*="review"]',  # Has review-related actions
+                'div.MyEned',  # Review wrapper
+                'div.GHT2ce',  # Alternative wrapper
+                'div[class*="review"]',  # Contains "review" in class
+                'div.fontBodyMedium',  # Body text container (less reliable)
             ]
             
             reviews_found = False
             working_selector = None
+            
+            # First, try the known selectors
             for selector in review_selectors:
                 test_count = await self.page.evaluate(f"""
-                    () => document.querySelectorAll('{selector}').length
+                    () => {{
+                        const elements = document.querySelectorAll('{selector}');
+                        // For fontBodyMedium, check if they look like reviews
+                        if ('{selector}' === 'div.fontBodyMedium') {{
+                            let reviewCount = 0;
+                            elements.forEach(el => {{
+                                const text = el.innerText || '';
+                                // Check if it has review-like content (name, date, rating, text)
+                                if (text.length > 50 && (
+                                    text.includes('ago') || 
+                                    text.includes('week') || 
+                                    text.includes('month') ||
+                                    text.includes('day') ||
+                                    text.includes('year')
+                                )) {{
+                                    reviewCount++;
+                                }}
+                            }});
+                            return reviewCount;
+                        }}
+                        return elements.length;
+                    }}
                 """)
                 print(f"  Testing {selector}: {test_count} elements")
                 if test_count > 0:
@@ -179,6 +283,58 @@ class GoogleMapsReviewsScraper:
                     reviews_found = True
                     working_selector = selector
                     break
+            
+            # If no reviews found with known selectors, try a more generic approach
+            if not reviews_found:
+                print("  Trying generic review detection...")
+                generic_count = await self.page.evaluate("""
+                    () => {
+                        // Look for elements that contain star ratings
+                        const allDivs = document.querySelectorAll('div');
+                        let reviewElements = [];
+                        
+                        allDivs.forEach(div => {
+                            // Check if this div has a star rating indicator
+                            const hasStars = div.querySelector('span[role="img"][aria-label*="star"]') ||
+                                           div.querySelector('span[aria-label*="stars"]') ||
+                                           div.querySelector('[aria-label*="Star rating"]');
+                            
+                            // Check if it has date-like text
+                            const text = div.innerText || '';
+                            const hasDate = text.includes('ago') || text.includes('week') || 
+                                          text.includes('month') || text.includes('day') ||
+                                          text.includes('year');
+                            
+                            // Check if it has substantial text (likely review content)
+                            const hasContent = text.length > 100;
+                            
+                            if (hasStars && hasDate && hasContent) {
+                                // Make sure it's not already counted (avoid nested divs)
+                                let isNested = false;
+                                reviewElements.forEach(existing => {
+                                    if (existing.contains(div) || div.contains(existing)) {
+                                        isNested = true;
+                                    }
+                                });
+                                
+                                if (!isNested) {
+                                    reviewElements.push(div);
+                                    // Mark it for easy selection later
+                                    div.setAttribute('data-detected-review', 'true');
+                                }
+                            }
+                        });
+                        
+                        return reviewElements.length;
+                    }
+                """)
+                
+                if generic_count > 0:
+                    print(f"✓ Found {generic_count} reviews using generic detection")
+                    working_selector = 'div[data-detected-review="true"]'
+                    reviews_found = True
+                else:
+                    print(f"  Generic detection found: {generic_count} elements")
             
             if not reviews_found:
                 print("⚠️ No reviews found with any selector.")
@@ -406,26 +562,49 @@ class GoogleMapsReviewsScraper:
                     try:
                         image_selectors = [
                             'button[aria-label*="photo"]',
+                            'button[aria-label*="Photo"]',
                             'button[jsaction*="photo"]',
                             'img[src*="googleusercontent"]',
+                            'img[src*="ggpht"]',
                             'button.Tya61d',
+                            'button[data-photo-index]',
                         ]
+                        has_images = False
                         for selector in image_selectors:
                             images = await review_elem.query_selector_all(selector)
                             if images and len(images) > 0:
-                                review_data['pictures'] = 'yes'
+                                # Additional check: make sure it's not a profile picture
+                                for img in images:
+                                    try:
+                                        aria_label = await img.get_attribute('aria-label')
+                                        # Skip if it's a profile picture
+                                        if aria_label and ('profile' in aria_label.lower() or 'avatar' in aria_label.lower()):
+                                            continue
+                                        has_images = True
+                                        break
+                                    except:
+                                        has_images = True
+                                        break
+                            if has_images:
                                 break
+                        
+                        if has_images:
+                            review_data['pictures'] = 'yes'
+                        else:
+                            review_data['pictures'] = 'no'
                     except:
-                        pass
+                        review_data['pictures'] = 'no'
                     
                     # Extract company reply - try multiple selectors
                     try:
                         reply_selectors = [
                             'div[class*="CDe7pd"]',
                             'div[aria-label*="Response from"]',
+                            'div[aria-label*="Response"]',
                             'div.wiI7pd',
-                            'div[data-review-id] + div',
+                            'button[aria-label*="response"]',
                         ]
+                        has_reply = False
                         for selector in reply_selectors:
                             reply_elem = await review_elem.query_selector(selector)
                             if reply_elem:
@@ -433,11 +612,17 @@ class GoogleMapsReviewsScraper:
                                 # Check if it's actually a reply (not empty and not same as review)
                                 if reply_text and reply_text.strip() and len(reply_text.strip()) > 5:
                                     # Check for "Response from" or owner indicator
-                                    if 'response' in reply_text.lower() or 'owner' in reply_text.lower():
-                                        review_data['company_reply'] = reply_text.strip()
+                                    reply_lower = reply_text.lower()
+                                    if any(keyword in reply_lower for keyword in ['response', 'owner', 'replied', 'reply']):
+                                        has_reply = True
                                         break
+                        
+                        if has_reply:
+                            review_data['company_reply'] = 'yes'
+                        else:
+                            review_data['company_reply'] = 'no'
                     except:
-                        pass
+                        review_data['company_reply'] = 'no'
                     
                     reviews.append(review_data)
                     
@@ -480,7 +665,7 @@ class GoogleMapsReviewsScraper:
             
             # Navigate to URL
             print(f"🌐 Navigating to Google Maps place...")
-            await self.page.goto(maps_url, wait_until='networkidle', timeout=30000)
+            await self.page.goto(maps_url, wait_until='domcontentloaded', timeout=60000)
             await asyncio.sleep(4)
             
             # Take screenshot for debugging
@@ -516,6 +701,9 @@ class GoogleMapsReviewsScraper:
             
             if not reviews_opened:
                 print("⚠️ Reviews tab not found, trying to extract from current view...")
+            else:
+                # Sort by lowest rating
+                await self._sort_by_lowest_rating()
             
             # Scroll to load more reviews
             await self._scroll_reviews(max_reviews)
