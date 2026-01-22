@@ -412,9 +412,13 @@ class GoogleMapsReviewsScraper:
             
             previous_count = 0
             no_change_count = 0
-            max_no_change = 5
+            max_no_change = 15  # Increased from 5 to 15 for better loading
+            scroll_attempts = 0
+            max_scroll_attempts = 100  # Maximum total scroll attempts
             
-            while no_change_count < max_no_change:
+            while no_change_count < max_no_change and scroll_attempts < max_scroll_attempts:
+                scroll_attempts += 1
+                
                 # Count current reviews using multiple selectors
                 current_count = await self.page.evaluate("""
                     () => {
@@ -426,11 +430,14 @@ class GoogleMapsReviewsScraper:
                         if (reviews.length === 0) {
                             reviews = document.querySelectorAll('div[jsaction*="review"]');
                         }
+                        if (reviews.length === 0) {
+                            reviews = document.querySelectorAll('div[data-detected-review="true"]');
+                        }
                         return reviews.length;
                     }
                 """)
                 
-                print(f"  Loaded {current_count} reviews...", end='\r')
+                print(f"  Loaded {current_count} reviews... (attempt {scroll_attempts})", end='\r')
                 
                 # Check if we have enough reviews
                 if max_reviews and current_count >= max_reviews:
@@ -445,6 +452,9 @@ class GoogleMapsReviewsScraper:
                         if (reviews.length === 0) {
                             reviews = document.querySelectorAll('div.jftiEf');
                         }
+                        if (reviews.length === 0) {
+                            reviews = document.querySelectorAll('div[data-detected-review="true"]');
+                        }
                         
                         if (reviews.length > 0) {
                             reviews[reviews.length - 1].scrollIntoView();
@@ -458,7 +468,7 @@ class GoogleMapsReviewsScraper:
                     }
                 """)
                 
-                await asyncio.sleep(random.uniform(2, 3))
+                await asyncio.sleep(random.uniform(1.5, 2))  # Reduced from 2-3 to 1.5-2
                 
                 if current_count == previous_count:
                     no_change_count += 1
