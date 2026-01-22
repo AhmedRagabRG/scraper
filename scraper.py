@@ -586,7 +586,56 @@ class GoogleMapsScraper:
 
             # Click on the card to load more details
             await article.click()
-            await asyncio.sleep(random.uniform(1, 2))
+            await asyncio.sleep(random.uniform(1.5, 2.5))
+            
+            # CRITICAL FIX: Wait for the detail panel to update with the correct business
+            # This prevents extracting data from the wrong business
+            if details['business_name']:
+                try:
+                    # Wait for the panel to show the correct business name
+                    # Try multiple times with increasing delays
+                    max_attempts = 5
+                    panel_updated = False
+                    
+                    for attempt in range(max_attempts):
+                        # Get the current business name shown in the detail panel
+                        panel_name = await self.page.evaluate('''() => {
+                            // Try multiple selectors for the business name in detail panel
+                            const selectors = [
+                                'h1[class*="fontHeadline"]',
+                                'h1.DUwDvf',
+                                'h1',
+                                '[role="main"] h1',
+                                '.DUwDvf.lfPIob'
+                            ];
+                            
+                            for (const selector of selectors) {
+                                const element = document.querySelector(selector);
+                                if (element && element.innerText && element.innerText.trim()) {
+                                    return element.innerText.trim();
+                                }
+                            }
+                            return null;
+                        }''')
+                        
+                        # Check if panel name matches the expected business name
+                        if panel_name and panel_name.strip() == details['business_name'].strip():
+                            panel_updated = True
+                            print(f"    ✓ Panel updated correctly for: {details['business_name']}")
+                            break
+                        else:
+                            # Panel not updated yet, wait a bit more
+                            await asyncio.sleep(0.5)
+                    
+                    if not panel_updated:
+                        print(f"    ⚠️ Warning: Panel may not have updated correctly for {details['business_name']}")
+                        # Add extra delay as fallback
+                        await asyncio.sleep(1)
+                        
+                except Exception as e:
+                    print(f"    ⚠️ Could not verify panel update: {e}")
+                    # Add extra delay as fallback
+                    await asyncio.sleep(1)
             
             # Try to extract review count from detail page if still not found
             if not details['review_count']:
@@ -597,6 +646,43 @@ class GoogleMapsScraper:
                         details['review_count'] = int(review_match.group(1).replace(',', ''))
                 except:
                     pass
+
+            # VERIFICATION: Double-check we're on the correct business before extracting contact details
+            # This is a final safety check to prevent data mismatch
+            try:
+                current_panel_name = await self.page.evaluate('''() => {
+                    const selectors = ['h1[class*="fontHeadline"]', 'h1.DUwDvf', 'h1'];
+                    for (const selector of selectors) {
+                        const element = document.querySelector(selector);
+                        if (element && element.innerText) {
+                            return element.innerText.trim();
+                        }
+                    }
+                    return null;
+                }''')
+                
+                if current_panel_name and details['business_name']:
+                    if current_panel_name.strip() != details['business_name'].strip():
+                        print(f"    ⚠️ WARNING: Panel name mismatch! Expected '{details['business_name']}' but got '{current_panel_name}'")
+                        print(f"    ⚠️ Skipping contact details extraction to avoid data mismatch")
+                        # Return early to avoid extracting wrong data
+                        return details
+            except Exception as e:
+                print(f"    ⚠️ Could not verify panel name: {e}")
+
+            # Scroll the detail panel to ensure all contact info is loaded
+            try:
+                await self.page.evaluate('''() => {
+                    const panel = document.querySelector('[role="main"]') || 
+                                  document.querySelector('.m6QErb.DxyBCb.kA9KIf.dS8AEf') ||
+                                  document.querySelector('div[class*="scrollable"]');
+                    if (panel) {
+                        panel.scrollTo(0, panel.scrollHeight / 2);
+                    }
+                }''')
+                await asyncio.sleep(0.5)
+            except:
+                pass
 
             # Extract phone number
             phone_selectors = [

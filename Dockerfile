@@ -25,7 +25,6 @@ RUN playwright install chromium && \
 COPY scraper.py .
 COPY main.py .
 COPY api.py .
-COPY reviews_scraper.py .
 
 # Create output directory
 RUN mkdir -p /app/output
