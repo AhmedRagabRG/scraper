@@ -87,28 +87,65 @@ class GoogleMapsReviewsScraper:
             except:
                 pass
             
+            # First, check if we're already on the reviews view
+            already_on_reviews = await self.page.evaluate("""
+                () => {
+                    // Check if there are review elements visible
+                    const hasReviewElements = document.querySelector('div[data-review-id]') ||
+                                             document.querySelector('div.jftiEf') ||
+                                             document.querySelector('span[role="img"][aria-label*="star"]');
+                    
+                    // Check if reviews tab is already selected
+                    const reviewsTab = document.querySelector('button[aria-label*="Reviews"][aria-selected="true"]') ||
+                                      document.querySelector('button[data-tab-index="1"][aria-selected="true"]');
+                    
+                    return hasReviewElements || reviewsTab;
+                }
+            """)
+            
+            if already_on_reviews:
+                print("✓ Already on reviews view, skipping tab click")
+                return True
+            
             # Try to find and click reviews tab - with more selectors
             reviews_selectors = [
                 'button[aria-label*="Reviews"]',
                 'button[aria-label*="reviews"]',
+                'button[data-tab-index="1"]',  # Usually reviews is the 2nd tab (0-indexed)
                 'button:has-text("Reviews")',
                 'button:has-text("reviews")',
-                'button[data-tab-index="1"]',
                 'div[role="tab"]:has-text("Reviews")',
                 '[role="tab"]:has-text("Reviews")',
+                'button[jsaction*="pane.reviewChart"]',
             ]
             
             clicked = False
             for selector in reviews_selectors:
                 try:
-                    button = await self.page.wait_for_selector(selector, timeout=3000)
+                    # Wait a bit longer for the button to appear
+                    button = await self.page.wait_for_selector(selector, timeout=5000)
                     if button:
+                        # Check if it's visible
+                        is_visible = await button.is_visible()
+                        if not is_visible:
+                            continue
+                        
                         # Scroll to button
                         await button.scroll_into_view_if_needed()
                         await asyncio.sleep(0.5)
                         
-                        # Click using JavaScript (more reliable)
-                        await self.page.evaluate('(btn) => btn.click()', button)
+                        # Try multiple click methods
+                        try:
+                            # Method 1: Regular click
+                            await button.click()
+                        except:
+                            try:
+                                # Method 2: JavaScript click
+                                await self.page.evaluate('(btn) => btn.click()', button)
+                            except:
+                                # Method 3: Force click
+                                await button.click(force=True)
+                        
                         print(f"✓ Clicked Reviews tab using: {selector}")
                         await asyncio.sleep(4)
                         clicked = True
@@ -122,6 +159,18 @@ class GoogleMapsReviewsScraper:
                 try:
                     buttons = await self.page.query_selector_all('button')
                     print(f"🔍 Found {len(buttons)} buttons on page")
+                    
+                    # Try to find buttons with text containing "review" (case insensitive)
+                    for btn in buttons[:20]:  # Check first 20 buttons
+                        try:
+                            text = await btn.inner_text()
+                            aria = await btn.get_attribute('aria-label')
+                            if text and 'review' in text.lower():
+                                print(f"  Found button with text: {text}")
+                            if aria and 'review' in aria.lower():
+                                print(f"  Found button with aria-label: {aria}")
+                        except:
+                            pass
                 except:
                     pass
                 return False
@@ -701,9 +750,10 @@ class GoogleMapsReviewsScraper:
             
             if not reviews_opened:
                 print("⚠️ Reviews tab not found, trying to extract from current view...")
-            else:
-                # Sort by lowest rating
-                await self._sort_by_lowest_rating()
+            # Temporarily disabled: sorting causes issues with current Google Maps layout
+            # else:
+            #     # Sort by lowest rating
+            #     await self._sort_by_lowest_rating()
             
             # Scroll to load more reviews
             await self._scroll_reviews(max_reviews)
