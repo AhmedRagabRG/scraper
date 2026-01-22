@@ -250,10 +250,12 @@ class GoogleMapsScraper:
             
         print(f"✓ Scrolling complete. Loaded all available results.")
 
-    async def _extract_email_from_website(self, website_url: str) -> Optional[str]:
-        """Visit a website and extract email address."""
+    async def _extract_contact_from_website(self, website_url: str) -> Dict[str, Optional[str]]:
+        """Visit a website and extract email address and phone number."""
+        result = {'email': None, 'phone': None}
+        
         if not website_url:
-            return None
+            return result
             
         try:
             # Create a new page for visiting the website
@@ -265,7 +267,9 @@ class GoogleMapsScraper:
             
             # Get page content
             page_content = await website_page.content()
+            page_text = await website_page.inner_text('body')
             
+            # Extract EMAIL
             # Common email regex patterns
             email_patterns = [
                 r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
@@ -281,28 +285,66 @@ class GoogleMapsScraper:
                         if not any(skip in email.lower() for skip in [
                             'example.com', 'test.com', 'domain.com', 
                             'youremail', 'email@', 'wix.com', 'sentry.io',
-                            'schema.org', 'w3.org', 'placeholder'
+                            'schema.org', 'w3.org', 'placeholder', 'yoursite.com'
                         ])
                     ]
                     if valid_emails:
-                        # Return the first valid email found
-                        await website_page.close()
-                        return valid_emails[0]
+                        result['email'] = valid_emails[0]
+                        break
             
-            # Try to find email links (mailto:)
-            mailto_elements = await website_page.query_selector_all('a[href^="mailto:"]')
-            if mailto_elements:
-                href = await mailto_elements[0].get_attribute('href')
-                email = href.replace('mailto:', '').split('?')[0]
-                await website_page.close()
-                return email
+            # If no email found, try to find email links (mailto:)
+            if not result['email']:
+                mailto_elements = await website_page.query_selector_all('a[href^="mailto:"]')
+                if mailto_elements:
+                    href = await mailto_elements[0].get_attribute('href')
+                    email = href.replace('mailto:', '').split('?')[0]
+                    result['email'] = email
+            
+            # Extract PHONE NUMBER
+            # Phone number patterns (international and local formats)
+            phone_patterns = [
+                r'\+?\d{1,4}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,9}',  # International
+                r'\(\d{3}\)\s*\d{3}[-\s]?\d{4}',  # (123) 456-7890
+                r'\d{3}[-\.\s]\d{3}[-\.\s]\d{4}',  # 123-456-7890
+                r'\d{10,}',  # 10+ digits
+            ]
+            
+            # Try to find phone in tel: links first (most reliable)
+            tel_elements = await website_page.query_selector_all('a[href^="tel:"]')
+            if tel_elements:
+                href = await tel_elements[0].get_attribute('href')
+                phone = href.replace('tel:', '').strip()
+                # Clean up the phone number
+                phone = re.sub(r'[^\d\+\-\(\)\s]', '', phone)
+                if len(phone) >= 10:
+                    result['phone'] = phone
+            
+            # If no phone found in tel: links, search in page text
+            if not result['phone']:
+                for pattern in phone_patterns:
+                    matches = re.findall(pattern, page_text)
+                    if matches:
+                        # Filter and validate phone numbers
+                        for match in matches:
+                            # Remove spaces and dashes for validation
+                            cleaned = re.sub(r'[\s\-\(\)\.]', '', match)
+                            # Check if it's a valid phone number (10-15 digits)
+                            if cleaned.isdigit() and 10 <= len(cleaned) <= 15:
+                                result['phone'] = match.strip()
+                                break
+                        if result['phone']:
+                            break
             
             await website_page.close()
             
         except Exception as e:
-            print(f"    ⚠️ Could not extract email from website: {e}")
+            print(f"    ⚠️ Could not extract contact info from website: {e}")
+            try:
+                await website_page.close()
+            except:
+                pass
             
-        return None
+        return result
 
     async def _extract_review_breakdown(self) -> Dict:
         """Extract star rating breakdown (5-star, 4-star, etc.)."""
@@ -684,26 +726,61 @@ class GoogleMapsScraper:
             except:
                 pass
 
-            # Extract phone number
-            phone_selectors = [
-                'button[data-tooltip="Copy phone number"]',
-                'button[aria-label*="Phone"]',
-                'a[href^="tel:"]',
-            ]
-            
-            for selector in phone_selectors:
-                phone_element = await self.page.query_selector(selector)
-                if phone_element:
-                    phone_text = await phone_element.inner_text()
-                    if phone_text and phone_text.strip():
-                        details['phone'] = phone_text.strip()
-                        break
-
-            # Extract website
+            # Extract website FIRST (we need it to prioritize website data)
             website_element = await self.page.query_selector('a[data-tooltip="Open website"]')
             if website_element:
                 website_url = await website_element.get_attribute('href')
                 details['website'] = website_url
+
+            # PRIORITY 1: If website exists, try to get email and phone from website FIRST
+            if details['website']:
+                print(f"    🌐 Visiting website to extract contact info...")
+                website_contact = await self._extract_contact_from_website(details['website'])
+                
+                if website_contact['email']:
+                    details['email'] = website_contact['email']
+                    print(f"    ✅ Email found on website: {website_contact['email']}")
+                
+                if website_contact['phone']:
+                    details['phone'] = website_contact['phone']
+                    print(f"    ✅ Phone found on website: {website_contact['phone']}")
+
+            # PRIORITY 2: If email not found on website, try Google Maps page
+            if not details['email']:
+                page_content = await self.page.content()
+                email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+                email_matches = re.findall(email_pattern, page_content)
+                
+                if email_matches:
+                    # Filter out common false positives
+                    valid_emails = [
+                        email for email in email_matches 
+                        if not any(skip in email.lower() for skip in [
+                            'example.com', 'test.com', 'domain.com', 
+                            'youremail', 'email@', 'google.com', 'gstatic.com',
+                            'schema.org', 'w3.org'
+                        ])
+                    ]
+                    if valid_emails:
+                        details['email'] = valid_emails[0]
+                        print(f"    ✅ Email found on Google Maps: {valid_emails[0]}")
+
+            # PRIORITY 3: If phone not found on website, try Google Maps
+            if not details['phone']:
+                phone_selectors = [
+                    'button[data-tooltip="Copy phone number"]',
+                    'button[aria-label*="Phone"]',
+                    'a[href^="tel:"]',
+                ]
+                
+                for selector in phone_selectors:
+                    phone_element = await self.page.query_selector(selector)
+                    if phone_element:
+                        phone_text = await phone_element.inner_text()
+                        if phone_text and phone_text.strip():
+                            details['phone'] = phone_text.strip()
+                            print(f"    ✅ Phone found on Google Maps: {phone_text.strip()}")
+                            break
 
             # Extract address
             address_selectors = [
@@ -718,29 +795,6 @@ class GoogleMapsScraper:
                     if address_text and address_text.strip():
                         details['address'] = address_text.strip()
                         break
-
-            # Extract email from Google Maps page first
-            page_content = await self.page.content()
-            email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-            email_matches = re.findall(email_pattern, page_content)
-            
-            if email_matches:
-                # Filter out common false positives
-                valid_emails = [
-                    email for email in email_matches 
-                    if not any(skip in email.lower() for skip in [
-                        'example.com', 'test.com', 'domain.com', 
-                        'youremail', 'email@', 'google.com', 'gstatic.com',
-                        'schema.org', 'w3.org'
-                    ])
-                ]
-                if valid_emails:
-                    details['email'] = valid_emails[0]
-
-            # If no email found on Google Maps and website exists, scrape from website
-            if not details['email'] and details['website']:
-                print(f"    🌐 Visiting website to find email...")
-                details['email'] = await self._extract_email_from_website(details['website'])
             
             # Extract review breakdown (star distribution) if reviews exist
             if details['review_count'] and details['review_count'] > 0:
@@ -766,13 +820,15 @@ class GoogleMapsScraper:
 
         return details
 
-    async def scrape(self, search_term: str, max_results: Optional[int] = None) -> List[Dict]:
+    async def scrape(self, search_term: str, max_results: Optional[int] = None, on_result_callback=None) -> List[Dict]:
         """
         Main scraping function.
         
         Args:
             search_term: The search query (e.g., "Real Estate Agencies in Cairo")
             max_results: Maximum number of results to extract (None = all available)
+            on_result_callback: Optional async callback function called after each result is extracted.
+                               Receives the result dict as parameter.
             
         Returns:
             List of dictionaries containing business information
@@ -807,6 +863,14 @@ class GoogleMapsScraper:
                 
                 if details['business_name']:
                     results.append(details)
+                    
+                    # Call the callback function if provided (for real-time processing)
+                    if on_result_callback:
+                        try:
+                            print(f"\n📤 Calling webhook callback for result {idx}/{len(articles)}: {details['business_name']}")
+                            await on_result_callback(details, idx, len(articles))
+                        except Exception as callback_error:
+                            print(f"\n⚠️ Callback error: {callback_error}")
                 
                 # Random delay between extractions
                 await asyncio.sleep(random.uniform(0.5, 1.5))
@@ -842,7 +906,7 @@ class GoogleMapsScraper:
             await self.browser.close()
 
 
-async def scrape_google_maps(search_term: str, headless: bool = True, max_results: Optional[int] = None) -> List[Dict]:
+async def scrape_google_maps(search_term: str, headless: bool = True, max_results: Optional[int] = None, on_result_callback=None) -> List[Dict]:
     """
     Convenience function to scrape Google Maps.
     
@@ -850,9 +914,10 @@ async def scrape_google_maps(search_term: str, headless: bool = True, max_result
         search_term: Search query
         headless: Run browser in headless mode
         max_results: Maximum number of results to extract (None = all available)
+        on_result_callback: Optional async callback function called after each result
         
     Returns:
         List of business information dictionaries
     """
     scraper = GoogleMapsScraper(headless=headless)
-    return await scraper.scrape(search_term, max_results=max_results)
+    return await scraper.scrape(search_term, max_results=max_results, on_result_callback=on_result_callback)

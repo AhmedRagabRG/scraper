@@ -132,11 +132,45 @@ async def run_scraper(job_id: str, query: str, max_results: Optional[int], headl
         jobs[job_id]['status'] = 'running'
         jobs[job_id]['progress'] = 'Starting scraper...'
         
-        # Run scraper
+        # Counter for webhook tracking
+        results_sent_count = 0
+        
+        # Define callback function for real-time webhook sending
+        async def on_result_extracted(result: Dict, current_idx: int, total_count: int):
+            nonlocal results_sent_count
+            
+            if webhook_url:
+                try:
+                    print(f"\n📤 Sending webhook for result {current_idx}/{total_count} to {webhook_url}")
+                    
+                    # Send individual result to webhook immediately
+                    payload = {
+                        "job_id": job_id,
+                        "status": "processing",
+                        "current_result": current_idx,
+                        "total_expected": total_count,
+                        "result": result,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        response = await client.post(webhook_url, json=payload)
+                        if response.status_code == 200:
+                            results_sent_count += 1
+                            jobs[job_id]['progress'] = f'Sent {results_sent_count}/{current_idx} results to webhook'
+                            print(f"✅ Webhook sent successfully for result {current_idx}")
+                        else:
+                            print(f"⚠️ Webhook failed for result {current_idx}: {response.status_code}")
+                            
+                except Exception as webhook_error:
+                    print(f"❌ Error sending webhook for result {current_idx}: {webhook_error}")
+        
+        # Run scraper with callback
         results = await scrape_google_maps(
             search_term=query,
             headless=headless,
-            max_results=max_results
+            max_results=max_results,
+            on_result_callback=on_result_extracted if webhook_url else None
         )
         
         if results:
@@ -148,17 +182,33 @@ async def run_scraper(job_id: str, query: str, max_results: Optional[int], headl
             jobs[job_id]['total_results'] = len(results)
             jobs[job_id]['completed_at'] = datetime.now().isoformat()
             jobs[job_id]['download_url'] = f"/download/{job_id}"
-            jobs[job_id]['progress'] = f'Completed! {len(results)} results'
             
-            # Send webhook if URL provided
+            # Send final completion webhook
             if webhook_url:
-                jobs[job_id]['progress'] = 'Sending webhook...'
-                webhook_sent = await send_webhook(webhook_url, job_id, results, 'completed')
-                jobs[job_id]['webhook_sent'] = webhook_sent
-                if webhook_sent:
-                    jobs[job_id]['progress'] = f'Completed! {len(results)} results (webhook sent)'
-                else:
-                    jobs[job_id]['progress'] = f'Completed! {len(results)} results (webhook failed)'
+                jobs[job_id]['progress'] = 'Sending completion webhook...'
+                completion_payload = {
+                    "job_id": job_id,
+                    "status": "completed",
+                    "total_results": len(results),
+                    "completed_at": datetime.now().isoformat(),
+                    "download_url": f"/download/{job_id}",
+                    "message": f"Scraping completed! {len(results)} results extracted and {results_sent_count} sent to webhook."
+                }
+                
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.post(webhook_url, json=completion_payload)
+                        webhook_sent = response.status_code == 200
+                        jobs[job_id]['webhook_sent'] = webhook_sent
+                        
+                        if webhook_sent:
+                            jobs[job_id]['progress'] = f'Completed! {len(results)} results ({results_sent_count} sent to webhook)'
+                        else:
+                            jobs[job_id]['progress'] = f'Completed! {len(results)} results (completion webhook failed)'
+                except Exception as e:
+                    jobs[job_id]['progress'] = f'Completed! {len(results)} results (completion webhook error: {e})'
+            else:
+                jobs[job_id]['progress'] = f'Completed! {len(results)} results'
         else:
             jobs[job_id]['status'] = 'completed'
             jobs[job_id]['total_results'] = 0
@@ -167,7 +217,18 @@ async def run_scraper(job_id: str, query: str, max_results: Optional[int], headl
             
             # Send webhook even if no results
             if webhook_url:
-                await send_webhook(webhook_url, job_id, [], 'completed')
+                completion_payload = {
+                    "job_id": job_id,
+                    "status": "completed",
+                    "total_results": 0,
+                    "completed_at": datetime.now().isoformat(),
+                    "message": "Scraping completed but no results found."
+                }
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        await client.post(webhook_url, json=completion_payload)
+                except:
+                    pass
             
     except Exception as e:
         jobs[job_id]['status'] = 'failed'
@@ -195,11 +256,45 @@ async def run_reviews_scraper(job_id: str, maps_url: str, max_reviews: Optional[
         jobs[job_id]['status'] = 'running'
         jobs[job_id]['progress'] = 'Starting reviews scraper...'
         
-        # Run reviews scraper
+        # Counter for webhook tracking
+        reviews_sent_count = 0
+        
+        # Define callback function for real-time webhook sending
+        async def on_review_extracted(review: Dict, current_idx: int, total_count: int):
+            nonlocal reviews_sent_count
+            
+            if webhook_url:
+                try:
+                    print(f"\n📤 Sending webhook for review {current_idx}/{total_count} to {webhook_url}")
+                    
+                    # Send individual review to webhook immediately
+                    payload = {
+                        "job_id": job_id,
+                        "status": "processing",
+                        "current_review": current_idx,
+                        "total_expected": total_count,
+                        "review": review,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        response = await client.post(webhook_url, json=payload)
+                        if response.status_code == 200:
+                            reviews_sent_count += 1
+                            jobs[job_id]['progress'] = f'Sent {reviews_sent_count}/{current_idx} reviews to webhook'
+                            print(f"✅ Webhook sent successfully for review {current_idx}")
+                        else:
+                            print(f"⚠️ Webhook failed for review {current_idx}: {response.status_code}")
+                            
+                except Exception as webhook_error:
+                    print(f"❌ Error sending webhook for review {current_idx}: {webhook_error}")
+        
+        # Run reviews scraper with callback
         results = await scrape_google_maps_reviews(
             maps_url=maps_url,
             headless=headless,
-            max_reviews=max_reviews
+            max_reviews=max_reviews,
+            on_review_callback=on_review_extracted if webhook_url else None
         )
         
         if results:
@@ -224,17 +319,33 @@ async def run_reviews_scraper(job_id: str, maps_url: str, max_reviews: Optional[
             jobs[job_id]['total_results'] = len(results)
             jobs[job_id]['completed_at'] = datetime.now().isoformat()
             jobs[job_id]['download_url'] = f"/download/{job_id}"
-            jobs[job_id]['progress'] = f'Completed! {len(results)} reviews extracted'
             
-            # Send webhook if URL provided
+            # Send final completion webhook
             if webhook_url:
-                jobs[job_id]['progress'] = 'Sending webhook...'
-                webhook_sent = await send_webhook(webhook_url, job_id, results, 'completed')
-                jobs[job_id]['webhook_sent'] = webhook_sent
-                if webhook_sent:
-                    jobs[job_id]['progress'] = f'Completed! {len(results)} reviews (webhook sent)'
-                else:
-                    jobs[job_id]['progress'] = f'Completed! {len(results)} reviews (webhook failed)'
+                jobs[job_id]['progress'] = 'Sending completion webhook...'
+                completion_payload = {
+                    "job_id": job_id,
+                    "status": "completed",
+                    "total_results": len(results),
+                    "completed_at": datetime.now().isoformat(),
+                    "download_url": f"/download/{job_id}",
+                    "message": f"Reviews scraping completed! {len(results)} reviews extracted and {reviews_sent_count} sent to webhook."
+                }
+                
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.post(webhook_url, json=completion_payload)
+                        webhook_sent = response.status_code == 200
+                        jobs[job_id]['webhook_sent'] = webhook_sent
+                        
+                        if webhook_sent:
+                            jobs[job_id]['progress'] = f'Completed! {len(results)} reviews ({reviews_sent_count} sent to webhook)'
+                        else:
+                            jobs[job_id]['progress'] = f'Completed! {len(results)} reviews (completion webhook failed)'
+                except Exception as e:
+                    jobs[job_id]['progress'] = f'Completed! {len(results)} reviews (completion webhook error: {e})'
+            else:
+                jobs[job_id]['progress'] = f'Completed! {len(results)} reviews extracted'
         else:
             jobs[job_id]['status'] = 'completed'
             jobs[job_id]['total_results'] = 0
@@ -242,7 +353,18 @@ async def run_reviews_scraper(job_id: str, maps_url: str, max_reviews: Optional[
             jobs[job_id]['progress'] = 'No reviews found'
             
             if webhook_url:
-                await send_webhook(webhook_url, job_id, [], 'completed')
+                completion_payload = {
+                    "job_id": job_id,
+                    "status": "completed",
+                    "total_results": 0,
+                    "completed_at": datetime.now().isoformat(),
+                    "message": "Reviews scraping completed but no reviews found."
+                }
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        await client.post(webhook_url, json=completion_payload)
+                except:
+                    pass
             
     except Exception as e:
         jobs[job_id]['status'] = 'failed'

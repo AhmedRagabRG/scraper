@@ -10,6 +10,7 @@ curl -X POST "http://localhost:8000/scrape" \
   -d '{
     "query": "Coffee Shops in Cairo",
     "max_results": 10,
+    "webhook_url": 'https://n8n.srv1276886.hstgr.cloud/webhook/f652c768-b945-4a05-bd02-5965dca7e8eb',
     "headless": true
   }'
 ```
@@ -37,7 +38,25 @@ curl -X POST "http://76.13.4.185:8000/scrape" \
 ```
 
 ### 2. Check Status
+root@srv1276886:~/scraper# docker logs 497e152f9974a5bacfca73698a2c39b8ce2a58a466b66d0407d7a901bdf14d3a
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     172.17.0.1:38552 - "POST /scrape HTTP/1.1" 200 OK
+🌐 Navigating to Google Maps...
+✓ Handled consent dialog
+🔍 Searching for: 
+✓ Found search box using selector: input[name="q"]
+INFO:     172.17.0.1:53344 - "GET /status/ee61a690 HTTP/1.1" 200 OK
+⏳ Waiting for results to load...
+INFO:     172.17.0.1:33818 - "GET /status/ee61a690 HTTP/1.1" 200 OK
+❌ Error during scraping: Page.wait_for_selector: Timeout 15000ms exceeded.
+Call log:
+  - waiting for locator("div[role=\"feed\"]") to be visible
 
+📸 Screenshot saved to: error_screenshot_345958.png
+root@srv1276886:~/sc
 ```bash
 curl http://localhost:8000/status/e3f68a2a
 ```

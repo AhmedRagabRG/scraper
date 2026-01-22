@@ -269,7 +269,7 @@ class GoogleMapsReviewsScraper:
             print(f"⚠️ Error scrolling reviews: {e}")
             return 0
 
-    async def _extract_reviews(self, max_reviews: Optional[int] = None) -> List[Dict]:
+    async def _extract_reviews(self, max_reviews: Optional[int] = None, on_review_callback=None) -> List[Dict]:
         """Extract review details from the page."""
         reviews = []
         
@@ -441,6 +441,14 @@ class GoogleMapsReviewsScraper:
                     
                     reviews.append(review_data)
                     
+                    # Call the callback function if provided (for real-time processing)
+                    if on_review_callback:
+                        try:
+                            print(f"\n📤 Calling webhook callback for review {idx}/{total}")
+                            await on_review_callback(review_data, idx, total)
+                        except Exception as callback_error:
+                            print(f"\n⚠️ Callback error: {callback_error}")
+                    
                 except Exception as e:
                     print(f"\n⚠️ Error extracting review {idx}: {e}")
                     continue
@@ -452,13 +460,14 @@ class GoogleMapsReviewsScraper:
             print(f"❌ Error in review extraction: {e}")
             return reviews
 
-    async def scrape(self, maps_url: str, max_reviews: Optional[int] = None) -> List[Dict]:
+    async def scrape(self, maps_url: str, max_reviews: Optional[int] = None, on_review_callback=None) -> List[Dict]:
         """
         Main scraping function for reviews.
         
         Args:
             maps_url: Google Maps place URL
             max_reviews: Maximum number of reviews to scrape (None = all)
+            on_review_callback: Optional async callback function called after each review is extracted
             
         Returns:
             List of review dictionaries
@@ -511,8 +520,8 @@ class GoogleMapsReviewsScraper:
             # Scroll to load more reviews
             await self._scroll_reviews(max_reviews)
             
-            # Extract reviews
-            reviews = await self._extract_reviews(max_reviews)
+            # Extract reviews with callback
+            reviews = await self._extract_reviews(max_reviews, on_review_callback)
             
         except Exception as e:
             print(f"❌ Error during scraping: {e}")
@@ -531,7 +540,7 @@ class GoogleMapsReviewsScraper:
             await self.browser.close()
 
 
-async def scrape_google_maps_reviews(maps_url: str, headless: bool = True, max_reviews: Optional[int] = None) -> List[Dict]:
+async def scrape_google_maps_reviews(maps_url: str, headless: bool = True, max_reviews: Optional[int] = None, on_review_callback=None) -> List[Dict]:
     """
     Convenience function to scrape Google Maps reviews.
     
@@ -539,9 +548,10 @@ async def scrape_google_maps_reviews(maps_url: str, headless: bool = True, max_r
         maps_url: Google Maps place URL
         headless: Run browser in headless mode
         max_reviews: Maximum number of reviews to scrape
+        on_review_callback: Optional async callback function called after each review
         
     Returns:
         List of review dictionaries
     """
     scraper = GoogleMapsReviewsScraper(headless=headless)
-    return await scraper.scrape(maps_url, max_reviews)
+    return await scraper.scrape(maps_url, max_reviews, on_review_callback)
