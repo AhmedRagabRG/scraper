@@ -36,6 +36,7 @@ class ScrapeRequest(BaseModel):
     max_results: Optional[int] = Field(None, description="Maximum number of results to scrape")
     headless: bool = Field(True, description="Run browser in headless mode")
     webhook_url: Optional[str] = Field(None, description="Webhook URL to send results when completed")
+    category: Optional[str] = Field(None, description="Optional category label to include in webhook responses")
 
 
 class ReviewsRequest(BaseModel):
@@ -89,6 +90,7 @@ def save_to_csv(data: List[Dict], output_path: str):
         'one_star',
         'phone',
         'email',
+        'from_website',
         'website',
         'address'
     ]
@@ -126,7 +128,7 @@ async def send_webhook(webhook_url: str, job_id: str, results: List[Dict], statu
         return False
 
 
-async def run_scraper(job_id: str, query: str, max_results: Optional[int], headless: bool, webhook_url: Optional[str] = None):
+async def run_scraper(job_id: str, query: str, max_results: Optional[int], headless: bool, webhook_url: Optional[str] = None, category: Optional[str] = None):
     """Background task to run the scraper."""
     try:
         jobs[job_id]['status'] = 'running'
@@ -152,6 +154,10 @@ async def run_scraper(job_id: str, query: str, max_results: Optional[int], headl
                         "result": result,
                         "timestamp": datetime.now().isoformat()
                     }
+                    
+                    # Add category if provided
+                    if category:
+                        payload["category"] = category
                     
                     async with httpx.AsyncClient(timeout=10.0) as client:
                         response = await client.post(webhook_url, json=payload)
@@ -418,6 +424,7 @@ async def scrape(request: ScrapeRequest, background_tasks: BackgroundTasks):
     - **max_results**: Maximum number of results (optional)
     - **headless**: Run browser in headless mode (default: true)
     - **webhook_url**: Webhook URL to send results when completed (optional)
+    - **category**: Optional category label to include in webhook responses (optional)
     """
     # Generate unique job ID
     job_id = str(uuid.uuid4())[:8]
@@ -429,6 +436,7 @@ async def scrape(request: ScrapeRequest, background_tasks: BackgroundTasks):
         'query': request.query,
         'max_results': request.max_results,
         'webhook_url': request.webhook_url,
+        'category': request.category,
         'created_at': datetime.now().isoformat(),
         'progress': 'Job created, waiting to start...'
     }
@@ -440,7 +448,8 @@ async def scrape(request: ScrapeRequest, background_tasks: BackgroundTasks):
         query=request.query,
         max_results=request.max_results,
         headless=request.headless,
-        webhook_url=request.webhook_url
+        webhook_url=request.webhook_url,
+        category=request.category
     )
     
     message = f"Scraping job started. Use /status/{job_id} to check progress."

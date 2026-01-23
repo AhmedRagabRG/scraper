@@ -2,18 +2,21 @@
 
 ## cURL Examples
 
-### 1. Start Scraping Job
+### 1. Start Scraping Job (with Category)
 
 ```bash
 curl -X POST "http://localhost:8000/scrape" \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "Coffee Shops in Cairo",
-    "max_results": 10,
-    "webhook_url": 'https://n8n.srv1276886.hstgr.cloud/webhook/f652c768-b945-4a05-bd02-5965dca7e8eb',
+    "query": "restaurants in spain",
+    "max_results": 50,
+    "webhook_url": "https://n8n.srv1276886.hstgr.cloud/webhook/f652c768-b945-4a05-bd02-5965dca7e8eb",
+    "category": "Spanish Restaurants",
     "headless": true
   }'
 ```
+
+**Note:** The `category` field is optional and will be included in every webhook response!
 
 ### 1b. Start Scraping Job with Webhook
 

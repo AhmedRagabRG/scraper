@@ -251,96 +251,183 @@ class GoogleMapsScraper:
         print(f"✓ Scrolling complete. Loaded all available results.")
 
     async def _extract_contact_from_website(self, website_url: str) -> Dict[str, Optional[str]]:
-        """Visit a website and extract email address and phone number."""
+        """Visit a website and extract email address and phone number.
+        Supports multiple languages (English, Spanish, German) and searches contact pages if needed.
+        """
         result = {'email': None, 'phone': None}
         
         if not website_url:
             return result
-            
+        
+        website_page = None
+        
         try:
             # Create a new page for visiting the website
             website_page = await self.context.new_page()
             
-            # Set timeout and visit the website
+            # Helper function to extract email and phone from current page
+            async def extract_from_current_page():
+                nonlocal result
+                
+                # Get page content
+                page_content = await website_page.content()
+                page_text = await website_page.inner_text('body')
+                
+                # Extract EMAIL
+                email_patterns = [
+                    r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
+                ]
+                
+                # Look for emails in the content
+                for pattern in email_patterns:
+                    matches = re.findall(pattern, page_content, re.IGNORECASE)
+                    if matches:
+                        # Filter out common false positives
+                        valid_emails = [
+                            email for email in matches 
+                            if not any(skip in email.lower() for skip in [
+                                'example.com', 'test.com', 'domain.com', 
+                                'youremail', 'email@', 'wix.com', 'sentry.io',
+                                'schema.org', 'w3.org', 'placeholder', 'yoursite.com',
+                                'example.org', 'sample.com'
+                            ])
+                        ]
+                        if valid_emails:
+                            result['email'] = valid_emails[0]
+                            break
+                
+                # If no email found, try to find email links (mailto:)
+                if not result['email']:
+                    mailto_elements = await website_page.query_selector_all('a[href^="mailto:"]')
+                    if mailto_elements:
+                        href = await mailto_elements[0].get_attribute('href')
+                        email = href.replace('mailto:', '').split('?')[0]
+                        result['email'] = email
+                
+                # Extract PHONE NUMBER
+                phone_patterns = [
+                    r'\+?\d{1,4}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,9}',
+                    r'\(\d{3}\)\s*\d{3}[-\s]?\d{4}',
+                    r'\d{3}[-\.\s]\d{3}[-\.\s]\d{4}',
+                    r'\d{10,}',
+                ]
+                
+                # Try to find phone in tel: links first (most reliable)
+                tel_elements = await website_page.query_selector_all('a[href^="tel:"]')
+                if tel_elements:
+                    href = await tel_elements[0].get_attribute('href')
+                    phone = href.replace('tel:', '').strip()
+                    phone = re.sub(r'[^\d\+\-\(\)\s]', '', phone)
+                    if len(phone) >= 10:
+                        result['phone'] = phone
+                
+                # If no phone found in tel: links, search in page text
+                if not result['phone']:
+                    for pattern in phone_patterns:
+                        matches = re.findall(pattern, page_text)
+                        if matches:
+                            for match in matches:
+                                cleaned = re.sub(r'[\s\-\(\)\.]', '', match)
+                                if cleaned.isdigit() and 10 <= len(cleaned) <= 15:
+                                    result['phone'] = match.strip()
+                                    break
+                            if result['phone']:
+                                break
+            
+            # STEP 1: Try main page first
+            print(f"    🌐 Visiting main page...")
             await website_page.goto(website_url, timeout=10000, wait_until='domcontentloaded')
             await asyncio.sleep(random.uniform(1, 2))
             
-            # Get page content
-            page_content = await website_page.content()
-            page_text = await website_page.inner_text('body')
+            # Extract from main page
+            await extract_from_current_page()
             
-            # Extract EMAIL
-            # Common email regex patterns
-            email_patterns = [
-                r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
-            ]
-            
-            # Look for emails in the content
-            for pattern in email_patterns:
-                matches = re.findall(pattern, page_content, re.IGNORECASE)
-                if matches:
-                    # Filter out common false positives
-                    valid_emails = [
-                        email for email in matches 
-                        if not any(skip in email.lower() for skip in [
-                            'example.com', 'test.com', 'domain.com', 
-                            'youremail', 'email@', 'wix.com', 'sentry.io',
-                            'schema.org', 'w3.org', 'placeholder', 'yoursite.com'
-                        ])
-                    ]
-                    if valid_emails:
-                        result['email'] = valid_emails[0]
-                        break
-            
-            # If no email found, try to find email links (mailto:)
+            # STEP 2: If no email found, try to find and visit contact page
             if not result['email']:
-                mailto_elements = await website_page.query_selector_all('a[href^="mailto:"]')
-                if mailto_elements:
-                    href = await mailto_elements[0].get_attribute('href')
-                    email = href.replace('mailto:', '').split('?')[0]
-                    result['email'] = email
-            
-            # Extract PHONE NUMBER
-            # Phone number patterns (international and local formats)
-            phone_patterns = [
-                r'\+?\d{1,4}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,9}',  # International
-                r'\(\d{3}\)\s*\d{3}[-\s]?\d{4}',  # (123) 456-7890
-                r'\d{3}[-\.\s]\d{3}[-\.\s]\d{4}',  # 123-456-7890
-                r'\d{10,}',  # 10+ digits
-            ]
-            
-            # Try to find phone in tel: links first (most reliable)
-            tel_elements = await website_page.query_selector_all('a[href^="tel:"]')
-            if tel_elements:
-                href = await tel_elements[0].get_attribute('href')
-                phone = href.replace('tel:', '').strip()
-                # Clean up the phone number
-                phone = re.sub(r'[^\d\+\-\(\)\s]', '', phone)
-                if len(phone) >= 10:
-                    result['phone'] = phone
-            
-            # If no phone found in tel: links, search in page text
-            if not result['phone']:
-                for pattern in phone_patterns:
-                    matches = re.findall(pattern, page_text)
-                    if matches:
-                        # Filter and validate phone numbers
-                        for match in matches:
-                            # Remove spaces and dashes for validation
-                            cleaned = re.sub(r'[\s\-\(\)\.]', '', match)
-                            # Check if it's a valid phone number (10-15 digits)
-                            if cleaned.isdigit() and 10 <= len(cleaned) <= 15:
-                                result['phone'] = match.strip()
-                                break
-                        if result['phone']:
-                            break
+                print(f"    📧 No email on main page, searching for contact page...")
+                
+                # Multi-language contact page keywords
+                contact_keywords = [
+                    # English
+                    'contact', 'contact us', 'get in touch', 'reach us',
+                    # Spanish
+                    'contacto', 'contáctanos', 'contacta', 'ponte en contacto',
+                    # German
+                    'kontakt', 'kontaktieren', 'kontaktiere uns',
+                    # Common patterns
+                    'email', 'e-mail', 'correo', 'correio'
+                ]
+                
+                # Try to find contact page link
+                contact_link = None
+                try:
+                    # Get all links on the page
+                    all_links = await website_page.query_selector_all('a[href]')
+                    
+                    for link in all_links:
+                        try:
+                            # Get link text and href
+                            link_text = await link.inner_text()
+                            href = await link.get_attribute('href')
+                            
+                            if not href or not link_text:
+                                continue
+                            
+                            # Check if link text or href contains contact keywords
+                            link_text_lower = link_text.lower().strip()
+                            href_lower = href.lower()
+                            
+                            # Check if this is a contact link
+                            is_contact_link = any(
+                                keyword in link_text_lower or keyword in href_lower 
+                                for keyword in contact_keywords
+                            )
+                            
+                            if is_contact_link:
+                                # Make sure it's not an email link
+                                if not href.startswith('mailto:'):
+                                    # Convert relative URL to absolute
+                                    if href.startswith('/'):
+                                        from urllib.parse import urljoin
+                                        contact_link = urljoin(website_url, href)
+                                    elif href.startswith('http'):
+                                        contact_link = href
+                                    else:
+                                        from urllib.parse import urljoin
+                                        contact_link = urljoin(website_url, '/' + href)
+                                    
+                                    print(f"    ✓ Found contact page: {contact_link}")
+                                    break
+                        except:
+                            continue
+                    
+                    # If contact link found, visit it
+                    if contact_link:
+                        try:
+                            print(f"    🌐 Visiting contact page...")
+                            await website_page.goto(contact_link, timeout=10000, wait_until='domcontentloaded')
+                            await asyncio.sleep(random.uniform(1, 2))
+                            
+                            # Extract from contact page
+                            await extract_from_current_page()
+                            
+                            if result['email']:
+                                print(f"    ✅ Email found on contact page!")
+                        except Exception as e:
+                            print(f"    ⚠️ Could not visit contact page: {e}")
+                    else:
+                        print(f"    ℹ️ No contact page link found")
+                        
+                except Exception as e:
+                    print(f"    ⚠️ Error searching for contact page: {e}")
             
             await website_page.close()
             
         except Exception as e:
             print(f"    ⚠️ Could not extract contact info from website: {e}")
             try:
-                await website_page.close()
+                if website_page:
+                    await website_page.close()
             except:
                 pass
             
@@ -571,6 +658,7 @@ class GoogleMapsScraper:
             'website': None,
             'address': None,
             'email': None,
+            'from_website': False,  # Track if email is from website or Google Maps
             'one_star': None,
             'two_star': None,
             'three_star': None,
@@ -739,6 +827,7 @@ class GoogleMapsScraper:
                 
                 if website_contact['email']:
                     details['email'] = website_contact['email']
+                    details['from_website'] = True  # Email is from website
                     print(f"    ✅ Email found on website: {website_contact['email']}")
                 
                 if website_contact['phone']:
@@ -763,6 +852,7 @@ class GoogleMapsScraper:
                     ]
                     if valid_emails:
                         details['email'] = valid_emails[0]
+                        details['from_website'] = False  # Email is from Google Maps
                         print(f"    ✅ Email found on Google Maps: {valid_emails[0]}")
 
             # PRIORITY 3: If phone not found on website, try Google Maps
