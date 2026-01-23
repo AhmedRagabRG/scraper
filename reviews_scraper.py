@@ -74,34 +74,6 @@ class GoogleMapsReviewsScraper:
         except:
             pass
 
-    async def _extract_place_name(self) -> str:
-        """Extract the place name from the Google Maps page."""
-        try:
-            # Try multiple selectors for place name
-            name_selectors = [
-                'h1[class*="DUwDvf"]',
-                'h1.fontHeadlineLarge',
-                'h1',
-                'div[role="main"] h1',
-            ]
-            
-            for selector in name_selectors:
-                try:
-                    name_elem = await self.page.wait_for_selector(selector, timeout=3000)
-                    if name_elem:
-                        name = await name_elem.inner_text()
-                        if name and len(name.strip()) > 0:
-                            print(f"📍 Place name: {name.strip()}")
-                            return name.strip()
-                except:
-                    continue
-            
-            print("⚠️ Could not extract place name")
-            return "Unknown Place"
-        except Exception as e:
-            print(f"⚠️ Error extracting place name: {e}")
-            return "Unknown Place"
-
     async def _click_reviews_tab(self):
         """Click on the reviews tab."""
         try:
@@ -316,10 +288,7 @@ class GoogleMapsReviewsScraper:
             
             # Try multiple selectors for reviews - expanded and prioritized list
             review_selectors = [
-                'div[role="article"].Nv2PK',  # Most reliable (2026 update) - article role with class
-                'div.Nv2PK.THOPZb.CpccDe',  # Full class combination
-                'div[role="article"][aria-label]',  # Article with aria-label (likely reviews)
-                'div[data-review-id]',  # Old reliable
+                'div[data-review-id]',  # Most reliable
                 'div.jftiEf',  # Common review container
                 'div[jsaction*="review"]',  # Has review-related actions
                 'div.MyEned',  # Review wrapper
@@ -455,17 +424,8 @@ class GoogleMapsReviewsScraper:
                 # Count current reviews using multiple selectors
                 current_count = await self.page.evaluate("""
                     () => {
-                        // Try multiple selectors (updated 2026)
-                        let reviews = document.querySelectorAll('div[role="article"].Nv2PK');
-                        if (reviews.length === 0) {
-                            reviews = document.querySelectorAll('div.Nv2PK.THOPZb.CpccDe');
-                        }
-                        if (reviews.length === 0) {
-                            reviews = document.querySelectorAll('div[role="article"][aria-label]');
-                        }
-                        if (reviews.length === 0) {
-                            reviews = document.querySelectorAll('div[data-review-id]');
-                        }
+                        // Try multiple selectors
+                        let reviews = document.querySelectorAll('div[data-review-id]');
                         if (reviews.length === 0) {
                             reviews = document.querySelectorAll('div.jftiEf');
                         }
@@ -553,7 +513,7 @@ class GoogleMapsReviewsScraper:
             print(f"⚠️ Error scrolling reviews: {e}")
             return 0
 
-    async def _extract_reviews(self, max_reviews: Optional[int] = None, on_review_callback=None, place_name: str = "Unknown Place", maps_url: str = "") -> List[Dict]:
+    async def _extract_reviews(self, max_reviews: Optional[int] = None, on_review_callback=None) -> List[Dict]:
         """Extract review details from the page."""
         reviews = []
         
@@ -561,9 +521,6 @@ class GoogleMapsReviewsScraper:
             # Try multiple selectors to find review elements
             review_elements = []
             selectors_to_try = [
-                'div[role="article"].Nv2PK',  # 2026 update - article role with class
-                'div.Nv2PK.THOPZb.CpccDe',  # Full class combination
-                'div[role="article"][aria-label]',  # Article with aria-label
                 'div[data-review-id]',
                 'div.jftiEf',
                 'div[jsaction*="review"]',
@@ -589,16 +546,7 @@ class GoogleMapsReviewsScraper:
                 try:
                     print(f"  Processing {idx}/{total}...", end='\r')
                     
-                    # First, validate this is actually a review element
-                    # Check if it has star rating (key indicator)
-                    has_rating = await review_elem.query_selector('span[role="img"][aria-label*="star"]')
-                    if not has_rating:
-                        # Skip this element, it's not a review
-                        continue
-                    
                     review_data = {
-                        'place_name': place_name,
-                        'maps_url': maps_url,
                         'reviewer_name': None,
                         'review_date': None,
                         'rating': None,
@@ -610,7 +558,6 @@ class GoogleMapsReviewsScraper:
                     # Extract reviewer name - try multiple selectors
                     try:
                         name_selectors = [
-                            'div.qBF1Pd',  # 2026 update
                             'div[class*="d4r55"]',
                             'button[aria-label]',
                             'a[aria-label]',
@@ -620,8 +567,7 @@ class GoogleMapsReviewsScraper:
                             name_elem = await review_elem.query_selector(selector)
                             if name_elem:
                                 text = await name_elem.inner_text()
-                                # Validate it's a name, not a button text
-                                if text and len(text.strip()) > 0 and text.strip() not in ['Directions', 'Save', 'Share', 'Nearby', 'Send to phone']:
+                                if text and len(text.strip()) > 0:
                                     review_data['reviewer_name'] = text.strip()
                                     break
                     except:
@@ -800,7 +746,6 @@ class GoogleMapsReviewsScraper:
             List of review dictionaries
         """
         reviews = []
-        place_name = "Unknown Place"
         
         try:
             # Setup browser
@@ -822,10 +767,6 @@ class GoogleMapsReviewsScraper:
             # Handle consent
             await self._handle_consent_dialog()
             await asyncio.sleep(2)
-            
-            # Extract place name
-            place_name = await self._extract_place_name()
-            await asyncio.sleep(1)
             
             # Take screenshot after consent
             if not self.headless:
@@ -856,8 +797,11 @@ class GoogleMapsReviewsScraper:
             # Scroll to load more reviews
             await self._scroll_reviews(max_reviews)
             
-            # Extract reviews with callback, passing place info
-            reviews = await self._extract_reviews(max_reviews, on_review_callback, place_name, maps_url)
+            # Extract reviews with callback
+            reviews = await self._extract_reviews(max_reviews, on_review_callback)
+            
+        except Exception as e:
+            print(f"❌ Error during scraping: {e}")
             raise
         
         finally:
