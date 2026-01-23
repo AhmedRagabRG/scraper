@@ -304,6 +304,8 @@ async def run_reviews_scraper(job_id: str, maps_url: str, max_reviews: Optional[
             # Create DataFrame with specific columns
             df = pd.DataFrame(results)
             column_order = [
+                'place_name',
+                'maps_url',
                 'reviewer_name',
                 'review_date',
                 'rating',

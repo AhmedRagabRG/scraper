@@ -1,0 +1,7 @@
+curl -X POST "http://localhost:8000/scrape-reviews" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "maps_url": "https://www.google.com/maps/place/Cilantro/@30.043669,31.0934683,12z/data=!4m10!1m2!2m1!1sCilantro!3m6!1s0x1458413a6bccb49d:0x70aab26eb6a5265b!8m2!3d30.0538921!4d31.2013923!15sCghDaWxhbnRyb1oKIghjaWxhbnRyb5IBC2NvZmZlZV9zaG9wmgEjQ2haRFNVaE5NRzluUzBWSlEwRm5TVVJpZFU4dFYxWm5FQUXgAQD6AQQIABA0!16s%2Fg%2F1tdtyp2w?hl=en&entry=ttu&g_ep=EgoyMDI2MDExOS4wIKXMDSoASAFQAw%3D%3D",
+    "headless": true,
+    "webhook_url": "https://n8n.srv1276886.hstgr.cloud/webhook/c6711294-70ce-4924-9ca2-3367980de1ed"
+}'

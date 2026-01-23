@@ -111,9 +111,9 @@ curl -X POST "http://localhost:8000/scrape-reviews" \
 
 **CSV Output:**
 ```csv
-reviewer_name,review_date,rating,review_text,pictures,company_reply
-Ahmed Mohamed,2 weeks ago,5,"Great service!",yes,"Thank you!"
-Sara Ali,1 month ago,4,"Good quality",no,no
+place_name,maps_url,reviewer_name,review_date,rating,review_text,pictures,company_reply
+OBI,https://www.google.com/maps/place/OBI/@53.6277929...,Ahmed Mohamed,2 weeks ago,5,"Great service!",yes,"Thank you!"
+OBI,https://www.google.com/maps/place/OBI/@53.6277929...,Sara Ali,1 month ago,4,"Good quality",no,no
 ```
 
 ---

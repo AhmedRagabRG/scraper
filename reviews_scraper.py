@@ -74,6 +74,34 @@ class GoogleMapsReviewsScraper:
         except:
             pass
 
+    async def _extract_place_name(self) -> str:
+        """Extract the place name from the Google Maps page."""
+        try:
+            # Try multiple selectors for place name
+            name_selectors = [
+                'h1[class*="DUwDvf"]',
+                'h1.fontHeadlineLarge',
+                'h1',
+                'div[role="main"] h1',
+            ]
+            
+            for selector in name_selectors:
+                try:
+                    name_elem = await self.page.wait_for_selector(selector, timeout=3000)
+                    if name_elem:
+                        name = await name_elem.inner_text()
+                        if name and len(name.strip()) > 0:
+                            print(f"📍 Place name: {name.strip()}")
+                            return name.strip()
+                except:
+                    continue
+            
+            print("⚠️ Could not extract place name")
+            return "Unknown Place"
+        except Exception as e:
+            print(f"⚠️ Error extracting place name: {e}")
+            return "Unknown Place"
+
     async def _click_reviews_tab(self):
         """Click on the reviews tab."""
         try:
@@ -288,7 +316,10 @@ class GoogleMapsReviewsScraper:
             
             # Try multiple selectors for reviews - expanded and prioritized list
             review_selectors = [
-                'div[data-review-id]',  # Most reliable
+                'div[role="article"].Nv2PK',  # Most reliable (2026 update) - article role with class
+                'div.Nv2PK.THOPZb.CpccDe',  # Full class combination
+                'div[role="article"][aria-label]',  # Article with aria-label (likely reviews)
+                'div[data-review-id]',  # Old reliable
                 'div.jftiEf',  # Common review container
                 'div[jsaction*="review"]',  # Has review-related actions
                 'div.MyEned',  # Review wrapper
@@ -412,9 +443,11 @@ class GoogleMapsReviewsScraper:
             
             previous_count = 0
             no_change_count = 0
-            max_no_change = 15  # Increased from 5 to 15 for better loading
+            max_no_change = 20  # Increased from 15 to 20 for more patience
             scroll_attempts = 0
-            max_scroll_attempts = 100  # Maximum total scroll attempts
+            max_scroll_attempts = 150  # Increased from 100 to 150
+            
+            print("  Using aggressive scrolling strategy...")
             
             while no_change_count < max_no_change and scroll_attempts < max_scroll_attempts:
                 scroll_attempts += 1
@@ -422,8 +455,17 @@ class GoogleMapsReviewsScraper:
                 # Count current reviews using multiple selectors
                 current_count = await self.page.evaluate("""
                     () => {
-                        // Try multiple selectors
-                        let reviews = document.querySelectorAll('div[data-review-id]');
+                        // Try multiple selectors (updated 2026)
+                        let reviews = document.querySelectorAll('div[role="article"].Nv2PK');
+                        if (reviews.length === 0) {
+                            reviews = document.querySelectorAll('div.Nv2PK.THOPZb.CpccDe');
+                        }
+                        if (reviews.length === 0) {
+                            reviews = document.querySelectorAll('div[role="article"][aria-label]');
+                        }
+                        if (reviews.length === 0) {
+                            reviews = document.querySelectorAll('div[data-review-id]');
+                        }
                         if (reviews.length === 0) {
                             reviews = document.querySelectorAll('div.jftiEf');
                         }
@@ -444,38 +486,65 @@ class GoogleMapsReviewsScraper:
                     print(f"\n✓ Reached target of {max_reviews} reviews")
                     break
                 
-                # Scroll down in reviews container
-                await self.page.evaluate("""
-                    () => {
-                        // Try to find and scroll reviews
-                        let reviews = document.querySelectorAll('div[data-review-id]');
-                        if (reviews.length === 0) {
-                            reviews = document.querySelectorAll('div.jftiEf');
-                        }
-                        if (reviews.length === 0) {
-                            reviews = document.querySelectorAll('div[data-detected-review="true"]');
-                        }
-                        
-                        if (reviews.length > 0) {
-                            reviews[reviews.length - 1].scrollIntoView();
-                        } else {
-                            // Fallback: scroll the feed
+                # AGGRESSIVE SCROLLING - Multiple methods
+                try:
+                    # Method 1: Scroll the feed container
+                    await self.page.evaluate("""
+                        () => {
                             const feed = document.querySelector('div[role="feed"]');
-                            if (feed) {
-                                feed.scrollTop = feed.scrollHeight;
+                            const scrollableDiv = document.querySelector('.m6QErb.DxyBCb.kA9KIf.dS8AEf');
+                            const container = feed || scrollableDiv;
+                            
+                            if (container) {
+                                // Scroll down by 800px
+                                container.scrollTop += 800;
                             }
                         }
-                    }
-                """)
+                    """)
+                    
+                    # Method 2: Press PageDown key (simulates user behavior)
+                    await self.page.keyboard.press('PageDown')
+                    await asyncio.sleep(0.5)
+                    
+                    # Method 3: Scroll last review into view
+                    await self.page.evaluate("""
+                        () => {
+                            let reviews = document.querySelectorAll('div[data-review-id]');
+                            if (reviews.length === 0) reviews = document.querySelectorAll('div.jftiEf');
+                            
+                            if (reviews.length > 0) {
+                                const lastReview = reviews[reviews.length - 1];
+                                lastReview.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                            }
+                        }
+                    """)
+                    
+                except Exception as scroll_error:
+                    print(f"\n⚠️ Scroll error: {scroll_error}")
                 
-                await asyncio.sleep(random.uniform(1.5, 2))  # Reduced from 2-3 to 1.5-2
+                # Wait for content to load (longer wait for better loading)
+                await asyncio.sleep(random.uniform(2, 3))
                 
+                # Track progress
                 if current_count == previous_count:
                     no_change_count += 1
+                    
+                    # If stuck for 5 attempts, try extra aggressive scroll
+                    if no_change_count == 5:
+                        print(f"\n🔄 Stuck at {current_count} reviews, trying extra aggressive scroll...")
+                        for _ in range(3):
+                            await self.page.keyboard.press('End')
+                            await asyncio.sleep(1)
+                            await self.page.keyboard.press('PageDown')
+                            await asyncio.sleep(1)
                 else:
-                    no_change_count = 0
+                    no_change_count = 0  # Reset counter when we make progress
                 
                 previous_count = current_count
+                
+                # Debug every 10 attempts
+                if scroll_attempts % 10 == 0:
+                    print(f"\n📊 Progress: {current_count} reviews after {scroll_attempts} attempts (no_change: {no_change_count})")
             
             print(f"\n✓ Finished scrolling. Total reviews visible: {current_count}")
             return current_count
@@ -484,7 +553,7 @@ class GoogleMapsReviewsScraper:
             print(f"⚠️ Error scrolling reviews: {e}")
             return 0
 
-    async def _extract_reviews(self, max_reviews: Optional[int] = None, on_review_callback=None) -> List[Dict]:
+    async def _extract_reviews(self, max_reviews: Optional[int] = None, on_review_callback=None, place_name: str = "Unknown Place", maps_url: str = "") -> List[Dict]:
         """Extract review details from the page."""
         reviews = []
         
@@ -492,6 +561,9 @@ class GoogleMapsReviewsScraper:
             # Try multiple selectors to find review elements
             review_elements = []
             selectors_to_try = [
+                'div[role="article"].Nv2PK',  # 2026 update - article role with class
+                'div.Nv2PK.THOPZb.CpccDe',  # Full class combination
+                'div[role="article"][aria-label]',  # Article with aria-label
                 'div[data-review-id]',
                 'div.jftiEf',
                 'div[jsaction*="review"]',
@@ -517,7 +589,16 @@ class GoogleMapsReviewsScraper:
                 try:
                     print(f"  Processing {idx}/{total}...", end='\r')
                     
+                    # First, validate this is actually a review element
+                    # Check if it has star rating (key indicator)
+                    has_rating = await review_elem.query_selector('span[role="img"][aria-label*="star"]')
+                    if not has_rating:
+                        # Skip this element, it's not a review
+                        continue
+                    
                     review_data = {
+                        'place_name': place_name,
+                        'maps_url': maps_url,
                         'reviewer_name': None,
                         'review_date': None,
                         'rating': None,
@@ -529,6 +610,7 @@ class GoogleMapsReviewsScraper:
                     # Extract reviewer name - try multiple selectors
                     try:
                         name_selectors = [
+                            'div.qBF1Pd',  # 2026 update
                             'div[class*="d4r55"]',
                             'button[aria-label]',
                             'a[aria-label]',
@@ -538,7 +620,8 @@ class GoogleMapsReviewsScraper:
                             name_elem = await review_elem.query_selector(selector)
                             if name_elem:
                                 text = await name_elem.inner_text()
-                                if text and len(text.strip()) > 0:
+                                # Validate it's a name, not a button text
+                                if text and len(text.strip()) > 0 and text.strip() not in ['Directions', 'Save', 'Share', 'Nearby', 'Send to phone']:
                                     review_data['reviewer_name'] = text.strip()
                                     break
                     except:
@@ -717,6 +800,7 @@ class GoogleMapsReviewsScraper:
             List of review dictionaries
         """
         reviews = []
+        place_name = "Unknown Place"
         
         try:
             # Setup browser
@@ -738,6 +822,10 @@ class GoogleMapsReviewsScraper:
             # Handle consent
             await self._handle_consent_dialog()
             await asyncio.sleep(2)
+            
+            # Extract place name
+            place_name = await self._extract_place_name()
+            await asyncio.sleep(1)
             
             # Take screenshot after consent
             if not self.headless:
@@ -768,11 +856,8 @@ class GoogleMapsReviewsScraper:
             # Scroll to load more reviews
             await self._scroll_reviews(max_reviews)
             
-            # Extract reviews with callback
-            reviews = await self._extract_reviews(max_reviews, on_review_callback)
-            
-        except Exception as e:
-            print(f"❌ Error during scraping: {e}")
+            # Extract reviews with callback, passing place info
+            reviews = await self._extract_reviews(max_reviews, on_review_callback, place_name, maps_url)
             raise
         
         finally:
