@@ -73,6 +73,95 @@ class GoogleMapsReviewsScraper:
                     continue
         except:
             pass
+    
+    async def _force_open_reviews_with_js(self):
+        """Force open reviews tab using JavaScript - most reliable method."""
+        try:
+            print("⏳ Executing JavaScript to open reviews...")
+            
+            # Wait for page to be ready
+            await asyncio.sleep(3)
+            
+            # Method 1: Find the main Reviews tab (not user profiles)
+            result = await self.page.evaluate("""
+                () => {
+                    // Find all buttons
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    
+                    // Method 1: Look for tabs specifically (role="tab")
+                    const tabs = buttons.filter(btn => btn.getAttribute('role') === 'tab');
+                    if (tabs.length > 0) {
+                        for (let tab of tabs) {
+                            const text = (tab.innerText || tab.textContent || '').toLowerCase();
+                            const ariaLabel = (tab.getAttribute('aria-label') || '').toLowerCase();
+                            
+                            if (text.includes('review') || text.includes('مراجع') || 
+                                ariaLabel.includes('review') || ariaLabel.includes('مراجع')) {
+                                console.log('Found Reviews tab:', tab.innerText);
+                                tab.click();
+                                return { success: true, method: 'reviews_tab', text: tab.innerText };
+                            }
+                        }
+                        
+                        // If no review tab found, click second tab (usually Reviews)
+                        if (tabs.length > 1) {
+                            console.log('Clicking second tab');
+                            tabs[1].click();
+                            return { success: true, method: 'second_tab', text: tabs[1].innerText };
+                        }
+                    }
+                    
+                    // Method 2: Find button with ONLY "Reviews" text (no names)
+                    for (let btn of buttons) {
+                        const text = btn.innerText || btn.textContent || '';
+                        const ariaLabel = btn.getAttribute('aria-label') || '';
+                        
+                        // Check if it's JUST the reviews text (no newlines = no user names)
+                        if (!text.includes('\\n') && text.trim().length < 30) {
+                            const combined = (text + ' ' + ariaLabel).toLowerCase();
+                            if ((combined.includes('مراجع') || combined.includes('review')) && 
+                                !combined.includes('كتابة') && !combined.includes('write')) {
+                                console.log('Found simple reviews button:', text);
+                                btn.click();
+                                return { success: true, method: 'simple_review_button', text: text };
+                            }
+                        }
+                    }
+                    
+                    return { success: false, buttons_count: buttons.length, tabs_count: tabs.length };
+                }
+            """)
+            
+            print(f"📊 JavaScript result: {result}")
+            
+            if result.get('success'):
+                print(f"✓ Opened reviews using: {result.get('method')}")
+                await asyncio.sleep(5)  # Wait for reviews to load
+                return True
+            else:
+                print(f"⚠️ JavaScript couldn't find reviews tab")
+                print(f"   Found {result.get('buttons_count', 0)} buttons, {result.get('tabs_count', 0)} tabs")
+                
+                # Debug: Print tabs info
+                tabs_info = await self.page.evaluate("""
+                    () => {
+                        const tabs = Array.from(document.querySelectorAll('button[role="tab"]'));
+                        return tabs.map((tab, i) => ({
+                            index: i,
+                            text: (tab.innerText || '').substring(0, 50),
+                            aria: tab.getAttribute('aria-label') || ''
+                        }));
+                    }
+                """)
+                print("🔍 Available tabs:")
+                for info in tabs_info:
+                    print(f"  Tab[{info['index']}] text='{info['text']}' aria='{info['aria'][:50]}'")
+                
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error in JavaScript execution: {e}")
+            return False
 
     async def _click_reviews_tab(self):
         """Click on the reviews tab."""
@@ -412,11 +501,11 @@ class GoogleMapsReviewsScraper:
             
             previous_count = 0
             no_change_count = 0
-            max_no_change = 20  # Increased from 15 to 20 for more patience
+            max_no_change = 15  # Stop if no new reviews after 15 attempts
             scroll_attempts = 0
-            max_scroll_attempts = 150  # Increased from 100 to 150
+            max_scroll_attempts = 300  # Increased from 100 to 300 for places with many reviews
             
-            print("  Using aggressive scrolling strategy...")
+            print("  Starting scroll loop...")
             
             while no_change_count < max_no_change and scroll_attempts < max_scroll_attempts:
                 scroll_attempts += 1
@@ -435,38 +524,103 @@ class GoogleMapsReviewsScraper:
                         if (reviews.length === 0) {
                             reviews = document.querySelectorAll('div[data-detected-review="true"]');
                         }
+                        console.log('Current reviews count:', reviews.length);
                         return reviews.length;
                     }
                 """)
                 
-                print(f"  Loaded {current_count} reviews... (attempt {scroll_attempts})", end='\r')
+                print(f"  Scroll #{scroll_attempts}: {current_count} reviews (no_change: {no_change_count}/{max_no_change})")
                 
                 # Check if we have enough reviews
                 if max_reviews and current_count >= max_reviews:
-                    print(f"\n✓ Reached target of {max_reviews} reviews")
+                    print(f"✓ Reached target of {max_reviews} reviews")
                     break
                 
-                # AGGRESSIVE SCROLLING - Multiple methods
+                # AGGRESSIVE SCROLLING - Find correct container and scroll
                 try:
-                    # Method 1: Scroll the feed container
-                    await self.page.evaluate("""
+                    scroll_result = await self.page.evaluate("""
                         () => {
-                            const feed = document.querySelector('div[role="feed"]');
-                            const scrollableDiv = document.querySelector('.m6QErb.DxyBCb.kA9KIf.dS8AEf');
-                            const container = feed || scrollableDiv;
+                            // CRITICAL: Find the correct feed - the one that contains actual reviews
+                            // NOT the search results feed on the left
                             
-                            if (container) {
-                                // Scroll down by 800px
-                                container.scrollTop += 800;
+                            let reviewsFeed = null;
+                            let method = 'none';
+                            
+                            // Strategy 1: Find feed that contains review elements
+                            const feeds = Array.from(document.querySelectorAll('div[role="feed"]'));
+                            
+                            for (let feed of feeds) {
+                                // Check if this feed contains reviews (not search results)
+                                const hasReviews = feed.querySelector('div[data-review-id]') || 
+                                                  feed.querySelector('div.jftiEf');
+                                
+                                // Also check it's NOT the search results feed (has place links)
+                                const hasPlaceLinks = feed.querySelectorAll('a[href*="/place/"]').length > 3;
+                                
+                                if (hasReviews && !hasPlaceLinks) {
+                                    reviewsFeed = feed;
+                                    method = 'feed_with_reviews';
+                                    break;
+                                }
+                            }
+                            
+                            // Strategy 2: Find scrollable div with class m6QErb that contains reviews
+                            if (!reviewsFeed) {
+                                const scrollableDivs = document.querySelectorAll('.m6QErb.DxyBCb.kA9KIf.dS8AEf');
+                                for (let div of scrollableDivs) {
+                                    const hasReviews = div.querySelector('div[data-review-id]') || 
+                                                      div.querySelector('div.jftiEf');
+                                    if (hasReviews) {
+                                        reviewsFeed = div;
+                                        method = 'scrollable_div';
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Strategy 3: Find by checking parent structure (reviews are usually in right panel)
+                            if (!reviewsFeed) {
+                                const allScrollable = document.querySelectorAll('div[style*="overflow"]');
+                                for (let div of allScrollable) {
+                                    const hasReviews = div.querySelector('div[data-review-id]') || 
+                                                      div.querySelector('div.jftiEf');
+                                    const rect = div.getBoundingClientRect();
+                                    // Check if it's on the right side of screen (reviews panel)
+                                    if (hasReviews && rect.left > window.innerWidth / 3) {
+                                        reviewsFeed = div;
+                                        method = 'right_panel';
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            if (reviewsFeed) {
+                                const beforeScroll = reviewsFeed.scrollTop;
+                                reviewsFeed.scrollTop += 1000;  // Increased from 800 to 1000
+                                const afterScroll = reviewsFeed.scrollTop;
+                                
+                                console.log(`Scrolling using ${method}: ${beforeScroll} -> ${afterScroll}`);
+                                
+                                return {
+                                    success: true,
+                                    method: method,
+                                    scrolled: afterScroll - beforeScroll,
+                                    position: afterScroll
+                                };
+                            } else {
+                                console.log('⚠️ Could not find reviews container!');
+                                return { success: false };
                             }
                         }
                     """)
                     
-                    # Method 2: Press PageDown key (simulates user behavior)
-                    await self.page.keyboard.press('PageDown')
-                    await asyncio.sleep(0.5)
+                    if scroll_result.get('success'):
+                        if scroll_result.get('scrolled') == 0:
+                            print(f"  ⚠️ Scroll position didn't change - might be at bottom")
+                    else:
+                        print(f"  ⚠️ Could not find scroll container")
                     
-                    # Method 3: Scroll last review into view
+                    # Also scroll last review into view as backup
                     await self.page.evaluate("""
                         () => {
                             let reviews = document.querySelectorAll('div[data-review-id]');
@@ -480,10 +634,10 @@ class GoogleMapsReviewsScraper:
                     """)
                     
                 except Exception as scroll_error:
-                    print(f"\n⚠️ Scroll error: {scroll_error}")
+                    print(f"  ❌ Scroll error: {scroll_error}")
                 
-                # Wait for content to load (longer wait for better loading)
-                await asyncio.sleep(random.uniform(2, 3))
+                # Wait for content to load
+                await asyncio.sleep(2.5)
                 
                 # Track progress
                 if current_count == previous_count:
@@ -516,6 +670,7 @@ class GoogleMapsReviewsScraper:
     async def _extract_reviews(self, max_reviews: Optional[int] = None, on_review_callback=None) -> List[Dict]:
         """Extract review details from the page."""
         reviews = []
+        seen_reviewers = set()  # Track seen reviews to avoid duplicates
         
         try:
             # Try multiple selectors to find review elements
@@ -540,7 +695,7 @@ class GoogleMapsReviewsScraper:
             if max_reviews:
                 total = min(total, max_reviews)
             
-            print(f"📊 Extracting {total} reviews...")
+            print(f"📊 Extracting {total} reviews (with deduplication)...")
             
             for idx, review_elem in enumerate(review_elements[:total], 1):
                 try:
@@ -712,13 +867,25 @@ class GoogleMapsReviewsScraper:
                     except:
                         review_data['company_reply'] = 'no'
                     
+                    # DEDUPLICATION: Create unique key for this review
+                    review_key = (
+                        review_data.get('reviewer_name', ''),
+                        review_data.get('review_text', '')[:50]  # First 50 chars of review text
+                    )
+                    
+                    # Skip if we've already seen this review
+                    if review_key in seen_reviewers:
+                        print(f"\n  ⏭️  Skipping duplicate review from {review_data.get('reviewer_name', 'Unknown')}")
+                        continue
+                    
+                    seen_reviewers.add(review_key)
                     reviews.append(review_data)
                     
                     # Call the callback function if provided (for real-time processing)
                     if on_review_callback:
                         try:
-                            print(f"\n📤 Calling webhook callback for review {idx}/{total}")
-                            await on_review_callback(review_data, idx, total)
+                            print(f"\n📤 Calling webhook callback for review {len(reviews)}/{total}")
+                            await on_review_callback(review_data, len(reviews), total)
                         except Exception as callback_error:
                             print(f"\n⚠️ Callback error: {callback_error}")
                     
@@ -726,7 +893,8 @@ class GoogleMapsReviewsScraper:
                     print(f"\n⚠️ Error extracting review {idx}: {e}")
                     continue
             
-            print(f"\n✓ Successfully extracted {len(reviews)} reviews")
+            duplicates_removed = total - len(reviews)
+            print(f"\n✓ Successfully extracted {len(reviews)} unique reviews (removed {duplicates_removed} duplicates)")
             return reviews
             
         except Exception as e:
