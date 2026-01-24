@@ -26,22 +26,35 @@ def webhook_receiver():
         # Print job info
         print(f"📊 Job ID: {data.get('job_id')}")
         print(f"✅ Status: {data.get('status')}")
-        print(f"📝 Total Results: {data.get('total_results')}")
-        print(f"⏰ Completed At: {data.get('completed_at')}")
         
-        # Print results summary
-        results = data.get('results', [])
-        if results:
-            print(f"\n📋 First 3 Results:")
-            for i, result in enumerate(results[:3], 1):
-                print(f"\n  Review {i}:")
-                print(f"    Name: {result.get('reviewer_name', 'N/A')}")
-                print(f"    Date: {result.get('review_date', 'N/A')}")
-                print(f"    Rating: {result.get('rating', 'N/A')}")
-                print(f"    Text: {result.get('review_text', 'N/A')[:100]}...")
+        # Print place info (for reviews)
+        if data.get('place_name'):
+            print(f"🏪 Place Name: {data.get('place_name')}")
+        if data.get('place_url'):
+            print(f"🔗 Place URL: {data.get('place_url')}")
+        
+        # Check if it's a single review or completion
+        if data.get('status') == 'processing':
+            # Single review webhook
+            print(f"📝 Review {data.get('current_review')}/{data.get('total_expected')}")
+            review = data.get('review', {})
+            print(f"   Name: {review.get('reviewer_name', 'N/A')}")
+            print(f"   Date: {review.get('review_date', 'N/A')}")
+            print(f"   Rating: {review.get('rating', 'N/A')}")
+            print(f"   Text: {review.get('review_text', 'N/A')[:100]}...")
+        
+        elif data.get('status') == 'completed':
+            # Completion webhook
+            print(f"📝 Total Results: {data.get('total_results')}")
+            print(f"⏰ Completed At: {data.get('completed_at')}")
+            print(f"💬 Message: {data.get('message', 'N/A')}")
+            
+            if data.get('download_url'):
+                print(f"⬇️  Download URL: {data.get('download_url')}")
         
         # Save to file (optional)
-        output_file = f"webhook_data_{data.get('job_id')}.json"
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_file = f"webhook_data_{data.get('job_id')}_{timestamp}.json"
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         print(f"\n💾 Data saved to {output_file}")

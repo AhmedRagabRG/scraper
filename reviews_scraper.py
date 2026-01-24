@@ -733,7 +733,7 @@ class GoogleMapsReviewsScraper:
             print(f"❌ Error in review extraction: {e}")
             return reviews
 
-    async def scrape(self, maps_url: str, max_reviews: Optional[int] = None, on_review_callback=None) -> List[Dict]:
+    async def scrape(self, maps_url: str, max_reviews: Optional[int] = None, on_review_callback=None) -> Dict:
         """
         Main scraping function for reviews.
         
@@ -743,61 +743,103 @@ class GoogleMapsReviewsScraper:
             on_review_callback: Optional async callback function called after each review is extracted
             
         Returns:
-            List of review dictionaries
+            Dictionary containing:
+                - place_name: Name of the business/place
+                - place_url: Google Maps URL
+                - reviews: List of review dictionaries
         """
         reviews = []
+        place_name = None
+        place_url = maps_url
         
         try:
             # Setup browser
             await self._setup_browser()
+            
+            # Force English language by adding hl=en parameter to URL
+            if '?' in maps_url:
+                if 'hl=' not in maps_url:
+                    maps_url = maps_url + '&hl=en'
+            else:
+                maps_url = maps_url + '?hl=en'
             
             # Navigate to URL
             print(f"🌐 Navigating to Google Maps place...")
             await self.page.goto(maps_url, wait_until='domcontentloaded', timeout=60000)
             await asyncio.sleep(4)
             
-            # Take screenshot for debugging
-            if not self.headless:
-                try:
-                    await self.page.screenshot(path='debug_1_initial.png', full_page=True)
-                    print("📸 Screenshot saved: debug_1_initial.png")
-                except:
-                    pass
-            
-            # Handle consent
+            # Handle consent first
             await self._handle_consent_dialog()
             await asyncio.sleep(2)
             
-            # Take screenshot after consent
+            # Get current URL (after redirects)
+            current_url = self.page.url
+            place_url = current_url
+            print(f"📍 Current URL: {current_url}")
+            
+            # Extract place name
+            try:
+                place_name = await self.page.evaluate("""
+                    () => {
+                        // Try multiple selectors for place name
+                        const selectors = [
+                            'h1',
+                            'h1[class*="fontHeadline"]',
+                            '[role="main"] h1',
+                            'div[role="main"] h1'
+                        ];
+                        
+                        for (let selector of selectors) {
+                            const elem = document.querySelector(selector);
+                            if (elem && elem.innerText) {
+                                return elem.innerText.trim();
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if place_name:
+                    print(f"🏪 Place Name: {place_name}")
+            except Exception as e:
+                print(f"⚠️ Could not extract place name: {e}")
+            
+            # Take initial screenshot
             if not self.headless:
                 try:
-                    await self.page.screenshot(path='debug_2_after_consent.png', full_page=True)
-                    print("📸 Screenshot saved: debug_2_after_consent.png")
+                    await self.page.screenshot(path='debug_1_initial.png', full_page=True)
+                    print("📸 Screenshot: debug_1_initial.png")
                 except:
                     pass
             
-            # Click on reviews tab
-            reviews_opened = await self._click_reviews_tab()
+            # CRITICAL FIX: Use JavaScript to directly click the Reviews tab
+            print("🔍 Using JavaScript to find and click Reviews tab...")
+            reviews_opened = await self._force_open_reviews_with_js()
             
-            # Take screenshot after clicking reviews
+            # Take screenshot after attempting to open reviews
             if not self.headless:
                 try:
-                    await self.page.screenshot(path='debug_3_after_reviews_click.png', full_page=True)
-                    print("📸 Screenshot saved: debug_3_after_reviews_click.png")
+                    await self.page.screenshot(path='debug_2_after_reviews_click.png', full_page=True)
+                    print("📸 Screenshot: debug_2_after_reviews_click.png")
                 except:
                     pass
             
             if not reviews_opened:
-                print("⚠️ Reviews tab not found, trying to extract from current view...")
-            # Temporarily disabled: sorting causes issues with current Google Maps layout
-            # else:
-            #     # Sort by lowest rating
-            #     await self._sort_by_lowest_rating()
+                print("⚠️ Could not open reviews tab, trying fallback method...")
+                # Fallback: Try the old click method
+                reviews_opened = await self._click_reviews_tab()
+            
+            # Take final screenshot
+            if not self.headless:
+                try:
+                    await self.page.screenshot(path='debug_3_final.png', full_page=True)
+                    print("📸 Screenshot: debug_3_final.png")
+                except:
+                    pass
             
             # Scroll to load more reviews
             await self._scroll_reviews(max_reviews)
             
-            # Extract reviews with callback
+            # Extract reviews
             reviews = await self._extract_reviews(max_reviews, on_review_callback)
             
         except Exception as e:
@@ -807,7 +849,11 @@ class GoogleMapsReviewsScraper:
         finally:
             await self.cleanup()
         
-        return reviews
+        return {
+            'place_name': place_name,
+            'place_url': place_url,
+            'reviews': reviews
+        }
 
     async def cleanup(self):
         """Close browser and cleanup resources."""
@@ -817,7 +863,7 @@ class GoogleMapsReviewsScraper:
             await self.browser.close()
 
 
-async def scrape_google_maps_reviews(maps_url: str, headless: bool = True, max_reviews: Optional[int] = None, on_review_callback=None) -> List[Dict]:
+async def scrape_google_maps_reviews(maps_url: str, headless: bool = True, max_reviews: Optional[int] = None, on_review_callback=None) -> Dict:
     """
     Convenience function to scrape Google Maps reviews.
     
@@ -828,6 +874,10 @@ async def scrape_google_maps_reviews(maps_url: str, headless: bool = True, max_r
         on_review_callback: Optional async callback function called after each review
         
     Returns:
+        Dictionary containing place_name, place_url, and reviews list
+    """
+    scraper = GoogleMapsReviewsScraper(headless=headless)
+    return await scraper.scrape(maps_url, max_reviews, on_review_callback)
         List of review dictionaries
     """
     scraper = GoogleMapsReviewsScraper(headless=headless)

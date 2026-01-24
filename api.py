@@ -264,6 +264,7 @@ async def run_reviews_scraper(job_id: str, maps_url: str, max_reviews: Optional[
         
         # Counter for webhook tracking
         reviews_sent_count = 0
+        place_info = {}  # Store place info
         
         # Define callback function for real-time webhook sending
         async def on_review_extracted(review: Dict, current_idx: int, total_count: int):
@@ -279,6 +280,8 @@ async def run_reviews_scraper(job_id: str, maps_url: str, max_reviews: Optional[
                         "status": "processing",
                         "current_review": current_idx,
                         "total_expected": total_count,
+                        "place_name": place_info.get('place_name'),
+                        "place_url": place_info.get('place_url'),
                         "review": review,
                         "timestamp": datetime.now().isoformat()
                     }
@@ -296,12 +299,17 @@ async def run_reviews_scraper(job_id: str, maps_url: str, max_reviews: Optional[
                     print(f"❌ Error sending webhook for review {current_idx}: {webhook_error}")
         
         # Run reviews scraper with callback
-        results = await scrape_google_maps_reviews(
+        result_data = await scrape_google_maps_reviews(
             maps_url=maps_url,
             headless=headless,
             max_reviews=max_reviews,
             on_review_callback=on_review_extracted if webhook_url else None
         )
+        
+        # Extract place info and reviews
+        place_info['place_name'] = result_data.get('place_name')
+        place_info['place_url'] = result_data.get('place_url')
+        results = result_data.get('reviews', [])
         
         if results:
             # Save to CSV
@@ -332,6 +340,8 @@ async def run_reviews_scraper(job_id: str, maps_url: str, max_reviews: Optional[
                 completion_payload = {
                     "job_id": job_id,
                     "status": "completed",
+                    "place_name": place_info.get('place_name'),
+                    "place_url": place_info.get('place_url'),
                     "total_results": len(results),
                     "completed_at": datetime.now().isoformat(),
                     "download_url": f"/download/{job_id}",
