@@ -878,7 +878,3 @@ async def scrape_google_maps_reviews(maps_url: str, headless: bool = True, max_r
     """
     scraper = GoogleMapsReviewsScraper(headless=headless)
     return await scraper.scrape(maps_url, max_reviews, on_review_callback)
-        List of review dictionaries
-    """
-    scraper = GoogleMapsReviewsScraper(headless=headless)
-    return await scraper.scrape(maps_url, max_reviews, on_review_callback)
