@@ -377,13 +377,10 @@ class GoogleMapsReviewsScraper:
             
             # Try multiple selectors for reviews - expanded and prioritized list
             review_selectors = [
-                'div[data-review-id]',  # Most reliable
+                'div.jftiEf[data-review-id]',  # Most specific
+                'div[data-review-id][aria-label]',  # Has aria-label
                 'div.jftiEf',  # Common review container
-                'div[jsaction*="review"]',  # Has review-related actions
-                'div.MyEned',  # Review wrapper
-                'div.GHT2ce',  # Alternative wrapper
-                'div[class*="review"]',  # Contains "review" in class
-                'div.fontBodyMedium',  # Body text container (less reliable)
+                'div[jsaction*="review.in"]',  # Has review-related actions
             ]
             
             reviews_found = False
@@ -674,17 +671,19 @@ class GoogleMapsReviewsScraper:
         
         try:
             # Try multiple selectors to find review elements
+            # IMPORTANT: Use specific selectors to avoid wrapper divs
             review_elements = []
             selectors_to_try = [
-                'div[data-review-id]',
-                'div.jftiEf',
-                'div[jsaction*="review"]',
+                'div.jftiEf[data-review-id]',  # Most specific - review content with ID
+                'div.jftiEf',  # Review content divs
+                'div[data-review-id][aria-label]',  # Has aria-label (actual content)
+                'div[jsaction*="review.in"][data-review-id]',  # Has mouse events
             ]
             
             for selector in selectors_to_try:
                 review_elements = await self.page.query_selector_all(selector)
                 if len(review_elements) > 0:
-                    print(f"✓ Using selector: {selector}")
+                    print(f"✓ Using selector: {selector} - Found {len(review_elements)} elements")
                     break
             
             if len(review_elements) == 0:
@@ -707,7 +706,8 @@ class GoogleMapsReviewsScraper:
                         'rating': None,
                         'review_text': None,
                         'pictures': 'no',
-                        'company_reply': 'no'
+                        'company_reply': 'no',
+                        'review_url': None
                     }
                     
                     # Extract reviewer name - try multiple selectors
@@ -866,6 +866,126 @@ class GoogleMapsReviewsScraper:
                             review_data['company_reply'] = 'no'
                     except:
                         review_data['company_reply'] = 'no'
+                    
+                    # Extract review URL - comprehensive extraction with debugging
+                    try:
+                        review_id = None
+                        
+                        # DEBUG: First check what we're working with
+                        if idx <= 2:  # Only debug first 2 reviews
+                            debug_info = await review_elem.evaluate("""
+                                (element) => {
+                                    return {
+                                        hasDataReviewId: !!element.getAttribute('data-review-id'),
+                                        dataReviewId: element.getAttribute('data-review-id'),
+                                        className: element.className,
+                                        tagName: element.tagName,
+                                        allAttributes: Array.from(element.attributes).map(a => `${a.name}=${a.value}`),
+                                        hasLinks: element.querySelectorAll('a').length,
+                                        hasButtons: element.querySelectorAll('button').length
+                                    }
+                                }
+                            """)
+                            print(f"\n🔍 DEBUG Review {idx}: {debug_info}")
+                        
+                        # Use comprehensive JavaScript extraction
+                        review_id = await review_elem.evaluate("""
+                            (element) => {
+                                // Method 1: Direct data-review-id on this element
+                                let reviewId = element.getAttribute('data-review-id');
+                                if (reviewId) return reviewId;
+                                
+                                // Method 2: Check parent and grandparent
+                                let parent = element.parentElement;
+                                if (parent && parent.getAttribute('data-review-id')) {
+                                    return parent.getAttribute('data-review-id');
+                                }
+                                
+                                let grandparent = parent ? parent.parentElement : null;
+                                if (grandparent && grandparent.getAttribute('data-review-id')) {
+                                    return grandparent.getAttribute('data-review-id');
+                                }
+                                
+                                // Method 3: Search ALL descendants with data-review-id
+                                const allWithReviewId = element.querySelectorAll('[data-review-id]');
+                                if (allWithReviewId.length > 0) {
+                                    return allWithReviewId[0].getAttribute('data-review-id');
+                                }
+                                
+                                // Method 4: Look for data-feature-id or similar
+                                const dataFeatureId = element.querySelector('[data-feature-id]');
+                                if (dataFeatureId) {
+                                    const fid = dataFeatureId.getAttribute('data-feature-id');
+                                    if (fid && fid.includes('review')) {
+                                        return fid;
+                                    }
+                                }
+                                
+                                // Method 5: Search in ALL buttons and links
+                                const allLinks = element.querySelectorAll('a, button, [role="button"]');
+                                for (let link of allLinks) {
+                                    // Check data-review-id
+                                    const rid = link.getAttribute('data-review-id');
+                                    if (rid) return rid;
+                                    
+                                    // Check href
+                                    const href = link.getAttribute('href') || '';
+                                    if (href.includes('reviewId=')) {
+                                        const match = href.match(/reviewId=([^&]+)/);
+                                        if (match) return match[1];
+                                    }
+                                    
+                                    // Check data-href
+                                    const dataHref = link.getAttribute('data-href') || '';
+                                    if (dataHref.includes('reviewId=')) {
+                                        const match = dataHref.match(/reviewId=([^&]+)/);
+                                        if (match) return match[1];
+                                    }
+                                    
+                                    // Check jsaction
+                                    const jsaction = link.getAttribute('jsaction') || '';
+                                    if (jsaction.includes('review')) {
+                                        // Try to extract ID from jsaction
+                                        const idMatch = jsaction.match(/review[^;]*[;:]([A-Za-z0-9_-]{20,})/);
+                                        if (idMatch) return idMatch[1];
+                                    }
+                                }
+                                
+                                // Method 6: Look for any attribute with long base64-like string
+                                const allElements = element.querySelectorAll('*');
+                                for (let el of allElements) {
+                                    for (let attr of el.attributes) {
+                                        const val = attr.value;
+                                        // Look for ChdD... pattern (Google review ID pattern)
+                                        if (val.startsWith('ChZD') || val.startsWith('Chd') || val.startsWith('ChdD')) {
+                                            if (val.length > 20 && val.length < 200) {
+                                                return val;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                return null;
+                            }
+                        """)
+                        
+                        # Build the review URL
+                        if review_id:
+                            # Get the base place URL (without query parameters)
+                            current_url = self.page.url
+                            base_url = current_url.split('?')[0]
+                            
+                            # Create review URL with reviewId parameter
+                            review_data['review_url'] = f"{base_url}?reviewId={review_id}"
+                            if idx <= 2:
+                                print(f"\n✅ Review {idx} ID: {review_id[:30]}...")
+                        else:
+                            # Fallback: use the place URL
+                            review_data['review_url'] = self.page.url
+                            print(f"\n⚠️ Could not extract review ID for review {idx}")
+                    except Exception as url_error:
+                        print(f"\n⚠️ Error extracting review URL: {url_error}")
+                        review_data['review_url'] = self.page.url
                     
                     # DEDUPLICATION: Create unique key for this review
                     review_key = (

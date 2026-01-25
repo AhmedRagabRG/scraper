@@ -323,7 +323,8 @@ async def run_reviews_scraper(job_id: str, maps_url: str, max_reviews: Optional[
                 'rating',
                 'review_text',
                 'pictures',
-                'company_reply'
+                'company_reply',
+                'review_url'
             ]
             available_columns = [col for col in column_order if col in df.columns]
             df = df[available_columns]
@@ -490,6 +491,7 @@ async def scrape_reviews(request: ReviewsRequest, background_tasks: BackgroundTa
     - review_text: The review comment
     - pictures: "yes" if review has pictures, "no" otherwise
     - company_reply: Company's response or "no" if no reply
+    - review_url: Direct URL to the specific review
     """
     # Generate unique job ID
     job_id = str(uuid.uuid4())[:8]
