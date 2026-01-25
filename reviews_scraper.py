@@ -801,79 +801,82 @@ class GoogleMapsReviewsScraper:
                     except:
                         pass
                     
-                    # Check for pictures - FIXED: Exclude profile pictures
+                    # Check for pictures - BALANCED: Detect actual review photos
                     try:
                         has_images = False
                         
-                        # Method 1: Look for photo buttons (most reliable for review photos)
-                        photo_button_selectors = [
-                            'button[aria-label*="photo"]',
-                            'button[aria-label*="Photo"]',
-                            'button[jsaction*="photo"]',
-                            'button[data-photo-index]',
-                            'button.Tya61d',  # Google's photo button class
-                        ]
+                        # Debug first 2 reviews to see what we find
+                        if idx <= 2:
+                            debug_buttons = await review_elem.evaluate("""
+                                (element) => {
+                                    const buttons = Array.from(element.querySelectorAll('button'));
+                                    return buttons.map(b => ({
+                                        aria: b.getAttribute('aria-label') || '',
+                                        class: b.className,
+                                        hasImg: !!b.querySelector('img')
+                                    })).filter(b => 
+                                        b.aria.toLowerCase().includes('photo') || 
+                                        b.aria.toLowerCase().includes('image') ||
+                                        b.class.includes('photo')
+                                    );
+                                }
+                            """)
+                            print(f"\n🔍 Review {idx} photo buttons: {debug_buttons}")
                         
-                        for selector in photo_button_selectors:
-                            photo_buttons = await review_elem.query_selector_all(selector)
-                            if photo_buttons and len(photo_buttons) > 0:
-                                # Verify it's actually a review photo button, not profile
-                                for btn in photo_buttons:
-                                    try:
-                                        aria_label = await btn.get_attribute('aria-label') or ''
-                                        aria_lower = aria_label.lower()
-                                        
-                                        # Skip if it contains profile/avatar indicators
-                                        if any(word in aria_lower for word in ['profile', 'avatar', 'user']):
-                                            continue
-                                        
-                                        # Check if it's a review photo (contains numbers like "photo 1 of 3")
-                                        if 'photo' in aria_lower or 'image' in aria_lower:
-                                            has_images = True
-                                            break
-                                    except:
-                                        pass
+                        # Method 1: Look for buttons with photo count in aria-label
+                        photo_buttons = await review_elem.query_selector_all('button[aria-label*="photo"], button[aria-label*="Photo"], button[aria-label*="image"], button[aria-label*="Image"]')
+                        
+                        for btn in photo_buttons:
+                            try:
+                                aria_label = await btn.get_attribute('aria-label') or ''
+                                aria_lower = aria_label.lower()
                                 
-                                if has_images:
-                                    break
-                        
-                        # Method 2: Look for image containers specific to review photos (not profile)
-                        if not has_images:
-                            # Look for multiple images in a container (review photos are usually in groups)
-                            image_containers = await review_elem.query_selector_all('div[class*="photo"], div[class*="image"]')
-                            for container in image_containers:
-                                try:
-                                    imgs = await container.query_selector_all('img[src*="googleusercontent"], img[src*="ggpht"]')
-                                    # If container has multiple images, it's likely review photos, not just profile
-                                    if len(imgs) > 1:
+                                # Skip profile pictures
+                                if 'profile' in aria_lower or 'avatar' in aria_lower:
+                                    continue
+                                
+                                # Pattern 1: Number + photo (e.g., "3 photos", "1 photo")
+                                import re
+                                match = re.search(r'(\d+)\s*(photo|image)', aria_lower)
+                                if match:
+                                    photo_count = int(match.group(1))
+                                    if photo_count > 0:
                                         has_images = True
+                                        if idx <= 2:
+                                            print(f"  ✅ Found {photo_count} photos via count")
                                         break
-                                except:
-                                    pass
+                                
+                                # Pattern 2: "photo" or "image" without profile keyword
+                                # This handles cases like "Open photo" or "View image"
+                                if ('photo' in aria_lower or 'image' in aria_lower):
+                                    # Additional check: must have an img element inside
+                                    has_img = await btn.query_selector('img')
+                                    if has_img:
+                                        # Check img src to make sure it's not a tiny profile pic
+                                        img_src = await has_img.get_attribute('src') or ''
+                                        # Review photos usually have larger dimensions in URL
+                                        # Profile pics usually have =s40, =s48, etc. (small sizes)
+                                        # Review photos have =w250, =w500, etc.
+                                        if '=w' in img_src or '=h' in img_src:
+                                            # Large image indicator
+                                            size_match = re.search(r'=w(\d+)|=h(\d+)', img_src)
+                                            if size_match:
+                                                size = int(size_match.group(1) or size_match.group(2) or 0)
+                                                if size > 100:  # Larger than profile pics
+                                                    has_images = True
+                                                    if idx <= 2:
+                                                        print(f"  ✅ Found photo via img size: {size}px")
+                                                    break
+                            except:
+                                pass
                         
-                        # Method 3: Count all images and check if more than just profile picture
+                        # Method 2: Check for button with data-photo-index
                         if not has_images:
-                            all_images = await review_elem.query_selector_all('img[src*="googleusercontent"], img[src*="ggpht"]')
-                            # Typically: 1 image = profile only, 2+ = profile + review photos
-                            # But we need to be more careful - check image sizes
-                            review_images = []
-                            for img in all_images:
-                                try:
-                                    # Get parent button to check if it's a photo button
-                                    parent = await img.evaluate_handle('el => el.closest("button")')
-                                    if parent:
-                                        parent_elem = parent.as_element()
-                                        if parent_elem:
-                                            aria_label = await parent_elem.get_attribute('aria-label') or ''
-                                            # If parent button has photo/image in aria-label, it's a review photo
-                                            if 'photo' in aria_label.lower() or 'image' in aria_label.lower():
-                                                if 'profile' not in aria_label.lower():
-                                                    review_images.append(img)
-                                except:
-                                    pass
-                            
-                            if len(review_images) > 0:
+                            photo_index_btns = await review_elem.query_selector_all('button[data-photo-index]')
+                            if len(photo_index_btns) > 0:
                                 has_images = True
+                                if idx <= 2:
+                                    print(f"  ✅ Found photos via data-photo-index")
                         
                         review_data['pictures'] = 'yes' if has_images else 'no'
                         
