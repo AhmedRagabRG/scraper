@@ -49,6 +49,9 @@ data/
 .env
 .env.local
 
+# Authentication cookies (keep private!)
+google_cookies.json
+
 # Testing
 .pytest_cache/
 .coverage

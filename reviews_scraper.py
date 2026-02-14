@@ -47,6 +47,22 @@ class GoogleMapsReviewsScraper:
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             locale='en-US',
         )
+        
+        # Load Google cookies if available
+        from pathlib import Path
+        import json
+        cookies_file = Path('google_cookies.json')
+        if cookies_file.exists():
+            try:
+                with open(cookies_file, 'r') as f:
+                    cookies = json.load(f)
+                await self.context.add_cookies(cookies)
+                print(f"✅ Loaded {len(cookies)} Google cookies (authenticated session)")
+            except Exception as e:
+                print(f"⚠️ Could not load cookies: {e}")
+        else:
+            print("⚠️ No Google cookies found. Reviews may not load without authentication.")
+            print("   Run: python google_auth.py")
 
         self.page = await self.context.new_page()
         
