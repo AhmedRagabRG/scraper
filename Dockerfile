@@ -30,15 +30,10 @@ RUN playwright install chromium && \
     playwright install-deps chromium
 
 # Copy application code
-COPY config.py .
-COPY scraper.py .
-COPY main.py .
-COPY api.py .
-COPY reviews_scraper.py .
-COPY google_auth.py .
+COPY *.py .
 
-# Copy Google cookies if exists (optional)
-COPY google_cookies.json* ./
+# Copy Google cookies if exists (optional - won't fail if not found)
+COPY google_cookies.jso[n] ./ || true
 
 # Create output directory
 RUN mkdir -p /app/output
