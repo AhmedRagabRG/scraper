@@ -10,6 +10,14 @@ import re
 from typing import List, Dict, Optional
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 
+# Import stealth plugin
+try:
+    from playwright_stealth import stealth_async
+    STEALTH_AVAILABLE = True
+except ImportError:
+    STEALTH_AVAILABLE = False
+    print("⚠️ playwright-stealth not installed. Continuing without stealth.")
+
 
 class GoogleMapsReviewsScraper:
     """Scraper for Google Maps reviews."""
@@ -41,8 +49,13 @@ class GoogleMapsReviewsScraper:
         )
 
         self.page = await self.context.new_page()
+        
+        # Apply playwright-stealth if available
+        if STEALTH_AVAILABLE:
+            await stealth_async(self.page)
+            print("✓ Stealth mode enabled")
 
-        # Stealth JavaScript
+        # Additional stealth JavaScript
         await self.page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => false,
