@@ -1,13 +1,14 @@
+# Git
+.git
+.gitignore
+
 # Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
+__pycache__
+*.pyc
+*.pyo
+*.pyd
 .Python
-*.egg-info/
-dist/
-build/
-*.egg
+*.so
 
 # Virtual environments
 venv/
@@ -15,40 +16,34 @@ env/
 ENV/
 .venv
 
-# IDEs
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Project specific
-output/
-*.csv
-*.png
-*.log
-
-# Git
-.git/
-.gitignore
-
-# Docker
-Dockerfile
-.dockerignore
+# Output files
+output/*.csv
+output/*.xlsx
+debug_*.html
+debug_*.png
 
 # Documentation
-README.md
-docs/
+*.md
+!README.md
+
+# Logs
+*.log
 
 # Testing
-tests/
-*.pytest_cache/
+.pytest_cache/
 .coverage
+htmlcov/
 
-# Environment
-.env
-.env.local
+# Playwright cache (will be installed in container)
+playwright-report/
+test-results/

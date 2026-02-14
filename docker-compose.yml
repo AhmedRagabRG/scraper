@@ -1,16 +1,19 @@
 version: '3.8'
 
 services:
-  scraper-api:
-    build: /scraper
-    container_name: google-maps-scraper-api
+  scraper:
+    build: .
+    container_name: google-maps-scraper
     ports:
       - "8000:8000"
-    environment:
-      - PORT=8000
-      - PYTHONUNBUFFERED=1
     volumes:
+      # Mount output directory to save results
       - ./output:/app/output
+      # Mount cookies file (if exists)
+      - ./google_cookies.json:/app/google_cookies.json:ro
+    environment:
+      - DISPLAY=:99
+      - PYTHONUNBUFFERED=1
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
