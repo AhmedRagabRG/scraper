@@ -9,11 +9,14 @@ services:
     volumes:
       # Mount output directory to save results
       - ./output:/app/output
-      # Mount cookies file (if exists)
+      # Mount cookies file (updated cookies will be picked up)
       - ./google_cookies.json:/app/google_cookies.json:ro
+      # Mount proxies file
+      - ./proxies.txt:/app/proxies.txt:ro
     environment:
       - DISPLAY=:99
       - PYTHONUNBUFFERED=1
+      - USE_PROXIES=true
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
