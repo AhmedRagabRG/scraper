@@ -54,10 +54,21 @@ class GoogleMapsReviewsScraper:
         cookies_file = Path('google_cookies.json')
         if cookies_file.exists():
             try:
-                with open(cookies_file, 'r') as f:
-                    cookies = json.load(f)
-                await self.context.add_cookies(cookies)
-                print(f"✅ Loaded {len(cookies)} Google cookies (authenticated session)")
+                # Check if file is empty
+                if cookies_file.stat().st_size == 0:
+                    print("⚠️ google_cookies.json is empty. Run: python google_auth.py")
+                else:
+                    with open(cookies_file, 'r') as f:
+                        cookies = json.load(f)
+                    
+                    if cookies and len(cookies) > 0:
+                        await self.context.add_cookies(cookies)
+                        print(f"✅ Loaded {len(cookies)} Google cookies (authenticated session)")
+                    else:
+                        print("⚠️ google_cookies.json is empty or invalid")
+            except json.JSONDecodeError as e:
+                print(f"⚠️ Invalid JSON in google_cookies.json: {e}")
+                print("   Please re-run: python google_auth.py")
             except Exception as e:
                 print(f"⚠️ Could not load cookies: {e}")
         else:

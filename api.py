@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict
 import uuid
+import random
 
 import httpx
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
@@ -29,6 +30,84 @@ app = FastAPI(
 
 # Store job status in memory (use Redis/DB for production)
 jobs: Dict[str, Dict] = {}
+
+
+def enhance_query(query: str) -> str:
+    """
+    Enhance search query with smart variations to get diverse results.
+    
+    Examples:
+        'coffee' -> 'best coffee shops'
+        'restaurant' -> 'top rated restaurants'
+        'gym' -> 'popular gyms nearby'
+    """
+    # قاموس الكلمات والـvariations بتاعتها
+    query_enhancements = {
+        'coffee': ['coffee shop', 'café', 'coffee bar', 'coffee house', 'espresso bar', 'specialty coffee'],
+        'restaurant': ['restaurant', 'dining', 'eatery', 'bistro', 'grill', 'fine dining'],
+        'gym': ['gym', 'fitness center', 'health club', 'workout studio', 'fitness club'],
+        'hotel': ['hotel', 'accommodation', 'lodging', 'inn', 'resort', 'guest house'],
+        'pharmacy': ['pharmacy', 'drugstore', 'chemist', 'apothecary', 'medical store'],
+        'bakery': ['bakery', 'patisserie', 'bread shop', 'pastry shop', 'confectionery'],
+        'bar': ['bar', 'pub', 'tavern', 'lounge', 'cocktail bar', 'nightclub'],
+        'clinic': ['clinic', 'medical center', 'health center', 'doctor office', 'medical clinic'],
+        'salon': ['salon', 'hair salon', 'beauty salon', 'barber shop', 'spa'],
+        'mall': ['mall', 'shopping center', 'shopping mall', 'plaza', 'shopping complex'],
+        'pizza': ['pizza place', 'pizzeria', 'pizza restaurant', 'italian restaurant'],
+        'burger': ['burger joint', 'burger place', 'hamburger restaurant', 'burger shop'],
+        'sushi': ['sushi restaurant', 'japanese restaurant', 'sushi bar', 'asian restaurant'],
+        'dentist': ['dentist', 'dental clinic', 'dental office', 'dental care'],
+        'bank': ['bank', 'banking', 'financial institution', 'credit union'],
+        'school': ['school', 'educational institution', 'academy', 'learning center'],
+        'park': ['park', 'public park', 'garden', 'recreational area'],
+        'hospital': ['hospital', 'medical center', 'healthcare facility', 'medical hospital'],
+        'supermarket': ['supermarket', 'grocery store', 'food market', 'grocery shop'],
+    }
+    
+    # Modifiers للتنويع
+    modifiers = [
+        'best', 'top', 'popular', 'highly rated', 'recommended',
+        'nearest', 'nearby', 'local', 'top rated', 'favorite'
+    ]
+    
+    # Suffixes للتنويع
+    suffixes = [
+        'near me', 'in the area', 'around here', 'close by', 'nearby'
+    ]
+    
+    query_lower = query.lower().strip()
+    
+    # تنظيف الـquery من الـmodifiers الموجودة
+    for mod in modifiers:
+        query_lower = query_lower.replace(mod, '').strip()
+    
+    # استخراج الكلمة الأساسية
+    base_word = query_lower.split()[0] if query_lower else query_lower
+    
+    # شوف لو الكلمة موجودة في القاموس
+    if base_word in query_enhancements:
+        # اختر variation عشوائي
+        variation = random.choice(query_enhancements[base_word])
+    else:
+        variation = query_lower
+    
+    # اختر modifier عشوائي
+    modifier = random.choice(modifiers)
+    
+    # 50% فرصة نضيف suffix
+    enhanced = f"{modifier} {variation}"
+    if random.random() > 0.5:
+        suffix = random.choice(suffixes)
+        enhanced = f"{enhanced} {suffix}"
+    
+    # لو في location في الـquery الأصلي، خليه
+    original_parts = query.lower().split(' in ')
+    if len(original_parts) > 1:
+        location = original_parts[-1]
+        enhanced = f"{enhanced} in {location}"
+    
+    print(f"🔄 Query enhanced: '{query}' -> '{enhanced}'")
+    return enhanced
 
 
 class ScrapeRequest(BaseModel):
@@ -427,7 +506,7 @@ async def health_check():
 
 
 @app.post("/scrape", response_model=ScrapeResponse)
-async def scrape(request: ScrapeRequest, background_tasks: BackgroundTasks):
+async def scrape(request: ScrapeRequest, background_tasks: BackgroundTasks, enhance: bool = Query(True, description="Auto-enhance query for diverse results")):
     """
     Start a new scraping job.
     
@@ -436,15 +515,21 @@ async def scrape(request: ScrapeRequest, background_tasks: BackgroundTasks):
     - **headless**: Run browser in headless mode (default: true)
     - **webhook_url**: Webhook URL to send results when completed (optional)
     - **category**: Optional category label to include in webhook responses (optional)
+    - **enhance**: Auto-enhance query with variations (default: true)
     """
     # Generate unique job ID
     job_id = str(uuid.uuid4())[:8]
+    
+    # Enhance query if requested
+    original_query = request.query
+    enhanced_query = enhance_query(request.query) if enhance else request.query
     
     # Store job info
     jobs[job_id] = {
         'job_id': job_id,
         'status': 'pending',
-        'query': request.query,
+        'query': original_query,
+        'enhanced_query': enhanced_query if enhance else None,
         'max_results': request.max_results,
         'webhook_url': request.webhook_url,
         'category': request.category,
@@ -456,14 +541,19 @@ async def scrape(request: ScrapeRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(
         run_scraper,
         job_id=job_id,
-        query=request.query,
+        query=enhanced_query,  # استخدم الـenhanced query
         max_results=request.max_results,
         headless=request.headless,
         webhook_url=request.webhook_url,
         category=request.category
     )
     
-    message = f"Scraping job started. Use /status/{job_id} to check progress."
+    # رسالة توضح الـenhancement
+    if enhance:
+        message = f"Scraping job started with enhanced query: '{enhanced_query}' (original: '{original_query}'). Use /status/{job_id} to check progress."
+    else:
+        message = f"Scraping job started for query: '{original_query}'. Use /status/{job_id} to check progress."
+    
     if request.webhook_url:
         message += f" Results will be sent to your webhook."
     
