@@ -7,6 +7,8 @@ Extracts reviews from a specific Google Maps place
 import asyncio
 import random
 import re
+import os
+from datetime import datetime
 from typing import List, Dict, Optional
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 from config import proxy_config, ScraperConfig
@@ -30,6 +32,48 @@ class GoogleMapsReviewsScraper:
         self.page: Optional[Page] = None
         self.playwright = None
         self._used_proxies = set()  # Track failed proxies to avoid reuse
+        self._debug_dir = 'output/debug'
+        os.makedirs(self._debug_dir, exist_ok=True)
+
+    async def _save_debug_page(self, step_name: str) -> str:
+        """Save page source HTML and screenshot for debugging.
+        Returns the path to the saved HTML file."""
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        base_name = f"{timestamp}_{step_name}"
+        html_path = os.path.join(self._debug_dir, f"{base_name}.html")
+        screenshot_path = os.path.join(self._debug_dir, f"{base_name}.png")
+        
+        try:
+            # Save page source
+            page_content = await self.page.content()
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(page_content)
+            print(f"\U0001f4c4 Debug HTML saved: {html_path} ({len(page_content)} bytes)")
+            
+            # Also print key info about the page
+            page_url = self.page.url
+            page_title = await self.page.title()
+            print(f"   URL: {page_url}")
+            print(f"   Title: {page_title}")
+            
+            # Print first 500 chars of visible text for quick debugging
+            visible_text = await self.page.evaluate("""
+                () => {
+                    return document.body ? document.body.innerText.substring(0, 500) : 'NO BODY';
+                }
+            """)
+            print(f"   Page text preview: {visible_text[:300]}...")
+        except Exception as e:
+            print(f"   \u26a0\ufe0f Could not save page source: {e}")
+        
+        try:
+            # Save screenshot
+            await self.page.screenshot(path=screenshot_path, full_page=True)
+            print(f"\U0001f4f8 Debug screenshot saved: {screenshot_path}")
+        except Exception as e:
+            print(f"   \u26a0\ufe0f Could not save screenshot: {e}")
+        
+        return html_path
 
     async def _setup_browser(self, exclude_proxy: Optional[str] = None):
         """Initialize browser with stealth configurations."""
@@ -125,6 +169,11 @@ class GoogleMapsReviewsScraper:
             page_url = self.page.url
             page_lower = page_content.lower()
             
+            # Check if page is basically empty or very small (sign of block)
+            if len(page_content) < 500:
+                print(f"🚫 Page content suspiciously small ({len(page_content)} bytes) - possible block")
+                return True
+            
             captcha_indicators = [
                 'recaptcha', 'g-recaptcha', 'captcha',
                 'unusual traffic', 'automated queries',
@@ -132,17 +181,26 @@ class GoogleMapsReviewsScraper:
                 'detected unusual traffic',
                 'are not a robot', 'verify you are human',
                 'blocked', 'access denied',
+                'consent.google', 'before you continue',
             ]
             
             for indicator in captcha_indicators:
                 if indicator in page_lower or indicator in page_url.lower():
                     print(f"🚫 Detected block indicator: '{indicator}'")
-                    try:
-                        await self.page.screenshot(path='debug_captcha.png', full_page=True)
-                        print("📸 Saved CAPTCHA screenshot: debug_captcha.png")
-                    except:
-                        pass
                     return True
+            
+            # Check if Google Maps actually loaded (has map-related elements)
+            has_maps_content = await self.page.evaluate("""
+                () => {
+                    const hasH1 = !!document.querySelector('h1');
+                    const hasMap = !!document.querySelector('[id*="map"], [class*="map"], canvas');
+                    const hasTabs = document.querySelectorAll('button[role="tab"]').length > 0;
+                    return { hasH1, hasMap, hasTabs, 
+                             bodyLen: (document.body?.innerText || '').length,
+                             url: window.location.href };
+                }
+            """)
+            print(f"📊 Page content check: {has_maps_content}")
             
             return False
         except Exception as e:
@@ -1327,11 +1385,39 @@ class GoogleMapsReviewsScraper:
         else:
             maps_url = maps_url + '?hl=en'
         
-        max_retries = 3
+        # Pre-resolve short URLs (maps.app.goo.gl) to avoid redirect issues through proxies
+        if 'goo.gl' in maps_url or 'maps.app' in maps_url:
+            print(f"🔗 Resolving short URL: {maps_url}")
+            try:
+                import httpx as _httpx
+                async with _httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+                    resp = await client.head(maps_url)
+                    resolved_url = str(resp.url)
+                    if resolved_url != maps_url and 'google.com/maps' in resolved_url:
+                        print(f"✅ Resolved to: {resolved_url}")
+                        maps_url = resolved_url
+                        # Re-add hl=en if needed
+                        if 'hl=' not in maps_url:
+                            maps_url = maps_url + ('&' if '?' in maps_url else '?') + 'hl=en'
+                    else:
+                        print(f"⚠️ URL resolved to: {resolved_url} (keeping original)")
+            except Exception as e:
+                print(f"⚠️ Could not pre-resolve short URL: {e} (will try navigating directly)")
+        
+        max_retries = 4  # 3 with proxy + 1 without proxy as last resort
         for attempt in range(1, max_retries + 1):
             try:
-                # Setup browser (will pick a different proxy on retry)
-                await self._setup_browser()
+                # On last attempt, disable proxy to try direct connection
+                if attempt == max_retries and ScraperConfig.USE_PROXIES:
+                    print("\\n🔄 All proxy attempts failed. Trying WITHOUT proxy (direct connection)...")
+                    # Temporarily disable proxies for this attempt
+                    original_use_proxies = ScraperConfig.USE_PROXIES
+                    ScraperConfig.USE_PROXIES = False
+                    await self._setup_browser()
+                    ScraperConfig.USE_PROXIES = original_use_proxies
+                else:
+                    # Setup browser (will pick a different proxy on retry)
+                    await self._setup_browser()
                 
                 # Navigate to URL with retry
                 print(f"🌐 Navigating to Google Maps place... (attempt {attempt}/{max_retries})")
@@ -1341,6 +1427,11 @@ class GoogleMapsReviewsScraper:
                     error_msg = str(nav_error).lower()
                     if 'timeout' in error_msg or 'net::' in error_msg:
                         print(f"⚠️ Navigation failed (proxy may be blocked/slow): {nav_error}")
+                        # Try to save whatever loaded
+                        try:
+                            await self._save_debug_page(f'nav_failed_attempt{attempt}')
+                        except:
+                            print("   Could not save debug page after nav failure")
                         if self._current_proxy:
                             self._used_proxies.add(self._current_proxy)
                             print(f"🔄 Blacklisting proxy and retrying with a different one...")
@@ -1355,6 +1446,9 @@ class GoogleMapsReviewsScraper:
                 
                 await asyncio.sleep(4)
                 
+                # === DEBUG: Save page source right after navigation ===
+                await self._save_debug_page(f'after_navigation_attempt{attempt}')
+                
                 # Handle consent first
                 await self._handle_consent_dialog()
                 await asyncio.sleep(2)
@@ -1363,6 +1457,7 @@ class GoogleMapsReviewsScraper:
                 is_blocked = await self._check_for_captcha()
                 if is_blocked:
                     print(f"🚫 CAPTCHA/block detected!")
+                    await self._save_debug_page(f'captcha_detected_attempt{attempt}')
                     if self._current_proxy:
                         self._used_proxies.add(self._current_proxy)
                         print(f"🔄 Blacklisting proxy and retrying...")
@@ -1405,23 +1500,15 @@ class GoogleMapsReviewsScraper:
                 except Exception as e:
                     print(f"⚠️ Could not extract place name: {e}")
                 
-                # Take initial screenshot
-                try:
-                    await self.page.screenshot(path='debug_1_initial.png', full_page=True)
-                    print("📸 Screenshot: debug_1_initial.png")
-                except:
-                    pass
+                # Take initial debug snapshot
+                await self._save_debug_page(f'before_reviews_click_attempt{attempt}')
                 
                 # CRITICAL FIX: Use JavaScript to directly click the Reviews tab
                 print("🔍 Using JavaScript to find and click Reviews tab...")
                 reviews_opened = await self._force_open_reviews_with_js()
                 
-                # Take screenshot after attempting to open reviews
-                try:
-                    await self.page.screenshot(path='debug_2_after_reviews_click.png', full_page=True)
-                    print("📸 Screenshot: debug_2_after_reviews_click.png")
-                except:
-                    pass
+                # Debug snapshot after reviews click attempt
+                await self._save_debug_page(f'after_reviews_click_attempt{attempt}')
                 
                 if not reviews_opened:
                     print("⚠️ Could not open reviews tab, trying fallback method...")
@@ -1449,12 +1536,8 @@ class GoogleMapsReviewsScraper:
                     if not reviews_opened:
                         reviews_opened = await self._click_reviews_tab()
                 
-                # Take final screenshot
-                try:
-                    await self.page.screenshot(path='debug_3_final.png', full_page=True)
-                    print("📸 Screenshot: debug_3_final.png")
-                except:
-                    pass
+                # Final debug snapshot before extraction
+                await self._save_debug_page(f'before_extraction_attempt{attempt}')
                 
                 # Scroll to load more reviews
                 await self._scroll_reviews(max_reviews)
@@ -1467,6 +1550,12 @@ class GoogleMapsReviewsScraper:
                 
             except Exception as e:
                 print(f"❌ Error during scraping (attempt {attempt}/{max_retries}): {e}")
+                # Try to save debug page on error
+                try:
+                    if self.page:
+                        await self._save_debug_page(f'error_attempt{attempt}')
+                except:
+                    pass
                 await self.cleanup()
                 if attempt < max_retries:
                     if self._current_proxy:

@@ -700,6 +700,62 @@ async def delete_job(job_id: str):
     return {"message": f"Job {job_id} deleted successfully"}
 
 
+@app.get("/debug-files")
+async def list_debug_files():
+    """List all debug HTML/PNG files saved during scraping for troubleshooting."""
+    debug_dir = Path("output/debug")
+    if not debug_dir.exists():
+        return {"files": [], "message": "No debug directory found"}
+    
+    files = []
+    for f in sorted(debug_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if f.suffix in ('.html', '.png'):
+            files.append({
+                "name": f.name,
+                "size_bytes": f.stat().st_size,
+                "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
+                "type": "html" if f.suffix == '.html' else "screenshot",
+                "url": f"/debug-file/{f.name}"
+            })
+    
+    return {"total": len(files), "files": files}
+
+
+@app.get("/debug-file/{filename}")
+async def get_debug_file(filename: str):
+    """Download/view a specific debug file (HTML source or screenshot)."""
+    # Prevent path traversal
+    if '..' in filename or '/' in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    
+    file_path = Path("output/debug") / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Debug file not found")
+    
+    if filename.endswith('.html'):
+        return FileResponse(file_path, media_type="text/html", filename=filename)
+    elif filename.endswith('.png'):
+        return FileResponse(file_path, media_type="image/png", filename=filename)
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+
+
+@app.delete("/debug-files")
+async def clear_debug_files():
+    """Delete all debug files."""
+    debug_dir = Path("output/debug")
+    if not debug_dir.exists():
+        return {"message": "No debug directory found", "deleted": 0}
+    
+    count = 0
+    for f in debug_dir.iterdir():
+        if f.suffix in ('.html', '.png'):
+            f.unlink()
+            count += 1
+    
+    return {"message": f"Deleted {count} debug files", "deleted": count}
+
+
 if __name__ == "__main__":
     import uvicorn
     
