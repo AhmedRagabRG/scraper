@@ -32,8 +32,8 @@ RUN playwright install chromium && \
 # Copy application code
 COPY *.py .
 
-# Copy Google cookies if exists (optional - won't fail if not found)
-COPY google_cookies.jso[n] ./ || true
+# Create empty cookies file if not exists (will be mounted later)
+RUN touch google_cookies.json || true
 
 # Create output directory
 RUN mkdir -p /app/output
