@@ -23,7 +23,8 @@ COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+    pip install -r requirements.txt && \
+    pip install playwright-stealth || echo 'playwright-stealth install failed, continuing without stealth'
 
 # Install Playwright browsers (Chromium only for efficiency)
 RUN playwright install chromium && \
@@ -36,8 +37,8 @@ COPY *.py .
 COPY google_cookies.json /app/google_cookies.json
 COPY proxies.txt /app/proxies.txt
 
-# Create output directory
-RUN mkdir -p /app/output
+# Create output directories
+RUN mkdir -p /app/output/debug
 
 # Expose port for API
 EXPOSE 8000
