@@ -765,7 +765,7 @@ class GoogleMapsReviewsScraper:
             
             previous_count = 0
             no_change_count = 0
-            max_no_change = 15  # Stop if no new reviews after 15 attempts
+            max_no_change = 10  # Stop if no new reviews after 10 attempts
             scroll_attempts = 0
             max_scroll_attempts = 300  # Increased from 100 to 300 for places with many reviews
             
@@ -1014,6 +1014,37 @@ class GoogleMapsReviewsScraper:
                 if current_count == previous_count:
                     no_change_count += 1
                     
+                    # If stuck for 3 attempts AND scroll position didn't change, likely at bottom
+                    if no_change_count == 3:
+                        # Check if we've actually reached the bottom of reviews
+                        at_bottom = await self.page.evaluate("""
+                            () => {
+                                // Check if there's an "end of reviews" indicator
+                                const endIndicators = document.querySelectorAll('.qjESne, .HlvSq');
+                                if (endIndicators.length > 0) return 'end_indicator_found';
+                                
+                                // Find the scroll container and check if we're at bottom
+                                const firstReview = document.querySelector('div[data-review-id]') || document.querySelector('div.jftiEf');
+                                if (firstReview) {
+                                    let parent = firstReview.parentElement;
+                                    while (parent && parent !== document.body) {
+                                        const style = window.getComputedStyle(parent);
+                                        if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && parent.scrollHeight > parent.clientHeight) {
+                                            const atBottom = parent.scrollTop + parent.clientHeight >= parent.scrollHeight - 50;
+                                            if (atBottom) return 'scroll_at_bottom';
+                                            break;
+                                        }
+                                        parent = parent.parentElement;
+                                    }
+                                }
+                                return 'not_at_bottom';
+                            }
+                        """)
+                        
+                        if at_bottom in ('end_indicator_found', 'scroll_at_bottom'):
+                            print(f"\n✅ Reached end of reviews ({current_count} total available). {at_bottom}")
+                            break
+                    
                     # If stuck for 5 attempts, try extra aggressive scroll
                     if no_change_count == 5:
                         print(f"\n🔄 Stuck at {current_count} reviews, trying aggressive strategies...")
@@ -1043,23 +1074,10 @@ class GoogleMapsReviewsScraper:
                         """)
                         await asyncio.sleep(3)
                     
-                    # If stuck for 8 attempts, try to click on the reviews sorting dropdown and reselect
+                    # If stuck for 8 attempts, we've likely reached all available reviews
                     if no_change_count == 8:
-                        print(f"\n🔄 Still stuck at {current_count} reviews, trying sort toggle...")
-                        try:
-                            # Click sort button to trigger a re-render
-                            sort_btn = await self.page.query_selector('button[aria-label*="Sort"], button[data-value*="Sort"], button.e2moi')
-                            if sort_btn:
-                                await sort_btn.click()
-                                await asyncio.sleep(2)
-                                # Click "Newest" then back to "Most relevant"
-                                newest = await self.page.query_selector('div[role="menuitemradio"][data-index="1"]')
-                                if newest:
-                                    await newest.click()
-                                    await asyncio.sleep(3)
-                                    print("   Toggled sort to Newest to trigger reload")
-                        except:
-                            pass
+                        print(f"\n⚠️ No new reviews after 8 scroll attempts. This place likely has only {current_count} reviews.")
+                        break
                 else:
                     no_change_count = 0  # Reset counter when we make progress
                 
