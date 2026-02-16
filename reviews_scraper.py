@@ -1430,25 +1430,25 @@ class GoogleMapsReviewsScraper:
             except Exception as e:
                 print(f"⚠️ Could not pre-resolve short URL: {e} (will try navigating directly)")
         
-        max_retries = 4  # 3 with proxy + 1 without proxy as last resort
+        max_retries = 3  # 1 direct + 2 with proxy as fallback
         for attempt in range(1, max_retries + 1):
             try:
-                # On last attempt, disable proxy to try direct connection
-                if attempt == max_retries and ScraperConfig.USE_PROXIES:
-                    print("\\n🔄 All proxy attempts failed. Trying WITHOUT proxy (direct connection)...")
-                    # Temporarily disable proxies for this attempt
+                # Strategy: try direct connection FIRST, then proxy if blocked
+                if attempt == 1:
+                    # First attempt: NO proxy (direct connection - fastest & most reliable)
+                    print("\n🔗 Attempt 1: Direct connection (no proxy)...")
                     original_use_proxies = ScraperConfig.USE_PROXIES
                     ScraperConfig.USE_PROXIES = False
                     await self._setup_browser()
                     ScraperConfig.USE_PROXIES = original_use_proxies
                 else:
-                    # Setup browser (will pick a different proxy on retry)
+                    # Subsequent attempts: try with proxy (in case direct is blocked/captcha)
+                    print(f"\n🔗 Attempt {attempt}: Trying with proxy...")
                     await self._setup_browser()
                 
                 # Navigate to URL with retry
-                # Use shorter timeout for proxy attempts (they either work quickly or are blocked)
-                # Use longer timeout for direct (no-proxy) connection
-                nav_timeout = 90000 if not self._current_proxy else 30000
+                # Direct connection gets longer timeout, proxy gets shorter
+                nav_timeout = 60000 if not self._current_proxy else 30000
                 print(f"🌐 Navigating to Google Maps place... (attempt {attempt}/{max_retries}, timeout={nav_timeout//1000}s, proxy={'yes' if self._current_proxy else 'NO'})")
                 try:
                     await self.page.goto(maps_url, wait_until='domcontentloaded', timeout=nav_timeout)
