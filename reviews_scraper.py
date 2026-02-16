@@ -13,13 +13,21 @@ from typing import List, Dict, Optional
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 from config import proxy_config, ScraperConfig
 
-# Import stealth plugin
+# Import stealth plugin (supports both v1.x and v2.x)
+STEALTH_AVAILABLE = False
+_stealth_instance = None
 try:
-    from playwright_stealth import stealth_async
+    # v2.x API
+    from playwright_stealth import Stealth
+    _stealth_instance = Stealth()
     STEALTH_AVAILABLE = True
 except ImportError:
-    STEALTH_AVAILABLE = False
-    print("⚠️ playwright-stealth not installed. Continuing without stealth.")
+    try:
+        # v1.x API fallback
+        from playwright_stealth import stealth_async
+        STEALTH_AVAILABLE = True
+    except ImportError:
+        print("⚠️ playwright-stealth not installed. Continuing without stealth.")
 
 
 class GoogleMapsReviewsScraper:
@@ -148,8 +156,16 @@ class GoogleMapsReviewsScraper:
         
         # Apply playwright-stealth if available
         if STEALTH_AVAILABLE:
-            await stealth_async(self.page)
-            print("✓ Stealth mode enabled")
+            try:
+                if _stealth_instance:
+                    # v2.x: apply to page
+                    await _stealth_instance.apply_stealth_async(self.page)
+                else:
+                    # v1.x fallback
+                    await stealth_async(self.page)
+                print("✓ Stealth mode enabled")
+            except Exception as e:
+                print(f"⚠️ Stealth apply failed: {e}. Continuing without stealth.")
 
         # Additional stealth JavaScript
         await self.page.add_init_script("""
