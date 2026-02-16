@@ -1390,11 +1390,21 @@ class GoogleMapsReviewsScraper:
             print(f"🔗 Resolving short URL: {maps_url}")
             try:
                 import httpx as _httpx
+                import urllib.parse as _urlparse
                 async with _httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
                     resp = await client.head(maps_url)
                     resolved_url = str(resp.url)
                     if resolved_url != maps_url and 'google.com/maps' in resolved_url:
-                        print(f"✅ Resolved to: {resolved_url}")
+                        # Clean tracking parameters that may cause blocks
+                        parsed = _urlparse.urlparse(resolved_url)
+                        params = _urlparse.parse_qs(parsed.query)
+                        # Remove tracking/fingerprinting params
+                        tracking_params = ['g_ep', 'skid', 'entry', 'authuser', 'g_st', 'shorturl']
+                        for tp in tracking_params:
+                            params.pop(tp, None)
+                        clean_query = _urlparse.urlencode(params, doseq=True)
+                        resolved_url = _urlparse.urlunparse(parsed._replace(query=clean_query))
+                        print(f"✅ Resolved & cleaned URL: {resolved_url}")
                         maps_url = resolved_url
                         # Re-add hl=en if needed
                         if 'hl=' not in maps_url:
@@ -1420,9 +1430,12 @@ class GoogleMapsReviewsScraper:
                     await self._setup_browser()
                 
                 # Navigate to URL with retry
-                print(f"🌐 Navigating to Google Maps place... (attempt {attempt}/{max_retries})")
+                # Use shorter timeout for proxy attempts (they either work quickly or are blocked)
+                # Use longer timeout for direct (no-proxy) connection
+                nav_timeout = 90000 if not self._current_proxy else 30000
+                print(f"🌐 Navigating to Google Maps place... (attempt {attempt}/{max_retries}, timeout={nav_timeout//1000}s, proxy={'yes' if self._current_proxy else 'NO'})")
                 try:
-                    await self.page.goto(maps_url, wait_until='domcontentloaded', timeout=90000)
+                    await self.page.goto(maps_url, wait_until='domcontentloaded', timeout=nav_timeout)
                 except Exception as nav_error:
                     error_msg = str(nav_error).lower()
                     if 'timeout' in error_msg or 'net::' in error_msg:
