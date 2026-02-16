@@ -936,18 +936,130 @@ class GoogleMapsReviewsScraper:
                 # Wait for content to load
                 await asyncio.sleep(2.5)
                 
+                # CRITICAL: Click any "More reviews" / "Load more" / expand buttons
+                try:
+                    await self.page.evaluate("""
+                        () => {
+                            // Click "More" / "See more reviews" buttons (multi-language)
+                            const moreKeywords = [
+                                'more review', 'more comments', 'load more', 'show more',
+                                'weitere rezensionen', 'mehr bewertungen', 'mehr anzeigen',
+                                'plus d\\'avis', 'afficher plus', 'voir plus',
+                                'm\u00e1s rese\u00f1as', 'mostrar m\u00e1s', 'cargar m\u00e1s',
+                                'altre recensioni', 'mostra altro',
+                                'daha fazla yorum', 'daha fazla g\u00f6ster',
+                                '\u0627\u0644\u0645\u0632\u064a\u062f', '\u0639\u0631\u0636 \u0627\u0644\u0645\u0632\u064a\u062f',
+                                '\u043e\u0449\u0435 \u043e\u0442\u0437\u044b\u0432\u044b', '\u043f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u0435\u0449\u0435',
+                            ];
+                            
+                            // Find and click buttons/links that load more reviews
+                            const clickables = document.querySelectorAll('button, a, [role="button"], [jsaction]');
+                            for (let el of clickables) {
+                                const text = (el.innerText || el.textContent || '').toLowerCase().trim();
+                                const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                                const combined = text + ' ' + ariaLabel;
+                                
+                                for (let kw of moreKeywords) {
+                                    if (combined.includes(kw)) {
+                                        console.log('Clicking "more reviews" button:', text.substring(0, 50));
+                                        el.click();
+                                        return 'clicked_more: ' + text.substring(0, 50);
+                                    }
+                                }
+                            }
+                            
+                            // Also click any "Next page" type pagination
+                            const nextButtons = document.querySelectorAll('button[aria-label*="Next"], button[aria-label*="next"], button[aria-label*="N\u00e4chste"]');
+                            for (let btn of nextButtons) {
+                                if (!btn.disabled) {
+                                    btn.click();
+                                    return 'clicked_next_page';
+                                }
+                            }
+                            
+                            return 'no_more_button_found';
+                        }
+                    """)
+                except:
+                    pass
+                
+                # Also try to expand "See all reviews" link if present
+                try:
+                    await self.page.evaluate("""
+                        () => {
+                            // Sometimes Google shows a "See all X reviews" link
+                            const links = document.querySelectorAll('a, button');
+                            for (let link of links) {
+                                const text = (link.innerText || '').toLowerCase();
+                                const ariaLabel = (link.getAttribute('aria-label') || '').toLowerCase();
+                                // Match "All reviews", "See all", "Alle Rezensionen", etc
+                                const allKeywords = ['all review', 'see all', 'alle rezension', 'alle bewertung', 
+                                                     'tous les avis', 'todas las rese', 'tutte le recens',
+                                                     't\u00fcm yorum', '\u062c\u0645\u064a\u0639 \u0627\u0644\u062a\u0642\u064a\u064a\u0645'];
+                                for (let kw of allKeywords) {
+                                    if ((text + ' ' + ariaLabel).includes(kw)) {
+                                        link.click();
+                                        console.log('Clicked "all reviews" link');
+                                        return true;
+                                    }
+                                }
+                            }
+                            return false;
+                        }
+                    """)
+                except:
+                    pass
+                
                 # Track progress
                 if current_count == previous_count:
                     no_change_count += 1
                     
                     # If stuck for 5 attempts, try extra aggressive scroll
                     if no_change_count == 5:
-                        print(f"\n🔄 Stuck at {current_count} reviews, trying extra aggressive scroll...")
+                        print(f"\n🔄 Stuck at {current_count} reviews, trying aggressive strategies...")
+                        
+                        # Strategy A: Try keyboard scrolling
                         for _ in range(3):
                             await self.page.keyboard.press('End')
                             await asyncio.sleep(1)
                             await self.page.keyboard.press('PageDown')
                             await asyncio.sleep(1)
+                        
+                        # Strategy B: Try to scroll the entire page body
+                        await self.page.evaluate("""
+                            () => {
+                                // Scroll all possible containers
+                                document.documentElement.scrollTop = document.documentElement.scrollHeight;
+                                document.body.scrollTop = document.body.scrollHeight;
+                                
+                                // Find ALL scrollable divs and scroll them
+                                const allDivs = document.querySelectorAll('div');
+                                for (let div of allDivs) {
+                                    if (div.scrollHeight > div.clientHeight + 200) {
+                                        div.scrollTop = div.scrollHeight;
+                                    }
+                                }
+                            }
+                        """)
+                        await asyncio.sleep(3)
+                    
+                    # If stuck for 8 attempts, try to click on the reviews sorting dropdown and reselect
+                    if no_change_count == 8:
+                        print(f"\n🔄 Still stuck at {current_count} reviews, trying sort toggle...")
+                        try:
+                            # Click sort button to trigger a re-render
+                            sort_btn = await self.page.query_selector('button[aria-label*="Sort"], button[data-value*="Sort"], button.e2moi')
+                            if sort_btn:
+                                await sort_btn.click()
+                                await asyncio.sleep(2)
+                                # Click "Newest" then back to "Most relevant"
+                                newest = await self.page.query_selector('div[role="menuitemradio"][data-index="1"]')
+                                if newest:
+                                    await newest.click()
+                                    await asyncio.sleep(3)
+                                    print("   Toggled sort to Newest to trigger reload")
+                        except:
+                            pass
                 else:
                     no_change_count = 0  # Reset counter when we make progress
                 
@@ -1570,6 +1682,30 @@ class GoogleMapsReviewsScraper:
                 
                 # Scroll to load more reviews
                 await self._scroll_reviews(max_reviews)
+                
+                # Expand all "Read more" / "More" buttons on individual reviews
+                try:
+                    expanded = await self.page.evaluate("""
+                        () => {
+                            let count = 0;
+                            // Click all "More" / "Read more" / "Mehr" expand buttons on reviews
+                            const expandKeywords = ['more', 'mehr', 'plus', 'm\u00e1s', 'altro', 'daha', '\u0627\u0644\u0645\u0632\u064a\u062f'];
+                            const buttons = document.querySelectorAll('button.w8nwRe, button.M77dve, button[jsaction*="review"], button[aria-expanded="false"]');
+                            buttons.forEach(btn => {
+                                const text = (btn.innerText || '').toLowerCase().trim();
+                                if (expandKeywords.some(kw => text.includes(kw)) || text === '' || btn.classList.contains('w8nwRe')) {
+                                    btn.click();
+                                    count++;
+                                }
+                            });
+                            return count;
+                        }
+                    """)
+                    if expanded > 0:
+                        print(f"📖 Expanded {expanded} review texts")
+                        await asyncio.sleep(2)
+                except:
+                    pass
                 
                 # Extract reviews
                 reviews = await self._extract_reviews(max_reviews, on_review_callback)
