@@ -9,6 +9,7 @@ import random
 import re
 from typing import List, Dict, Optional
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext
+from config import proxy_config, ScraperConfig
 
 # Import stealth plugin
 try:
@@ -32,19 +33,37 @@ class GoogleMapsReviewsScraper:
         """Initialize browser with stealth configurations."""
         playwright = await async_playwright().start()
         
-        self.browser = await playwright.chromium.launch(
-            headless=self.headless,
-            args=[
+        # Setup proxy if available
+        launch_options = {
+            'headless': self.headless,
+            'args': [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-blink-features=AutomationControlled',
             ]
-        )
+        }
+        
+        proxy_url = None
+        if ScraperConfig.USE_PROXIES:
+            proxy_url = proxy_config.get_random_proxy()
+            if proxy_url:
+                proxy_dict = proxy_config._parse_proxy_url(proxy_url)
+                if proxy_dict:
+                    launch_options['proxy'] = proxy_dict
+                    print(f"🌐 Using proxy: {proxy_dict['server']}")
+                else:
+                    print("⚠️ Failed to parse proxy URL, continuing without proxy")
+            else:
+                print("⚠️ USE_PROXIES=true but no proxies available")
+        else:
+            print("ℹ️ Proxies disabled (set USE_PROXIES=true to enable)")
+        
+        self.browser = await playwright.chromium.launch(**launch_options)
 
         self.context = await self.browser.new_context(
             viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            user_agent=ScraperConfig.get_random_user_agent(),
             locale='en-US',
         )
         
@@ -123,32 +142,97 @@ class GoogleMapsReviewsScraper:
             await asyncio.sleep(3)
             
             # Method 1: Find the main Reviews tab (not user profiles)
+            # Supports multiple languages for "Reviews" tab detection
             result = await self.page.evaluate("""
                 () => {
+                    // Multi-language keywords for "Reviews" tab
+                    const reviewKeywords = [
+                        'review', 'reviews',           // English
+                        'مراجع', 'تقييم',              // Arabic
+                        'rezension', 'bewertung',      // German
+                        'avis',                        // French
+                        'reseñ', 'opiniones',          // Spanish
+                        'recens', 'valutazion',        // Italian
+                        'avaliação', 'avaliações',     // Portuguese
+                        'yorum',                       // Turkish
+                        'отзыв',                       // Russian
+                        'recenze',                     // Czech
+                        'beoordelingen',               // Dutch
+                        'リ\u30D3\u30E5\u30FC', 'クチコミ',              // Japanese
+                        '리뷰',                        // Korean
+                        '评论',                        // Chinese
+                        'đánh giá',                    // Vietnamese
+                        'ulasan',                      // Malay/Indonesian
+                        'recenzj',                     // Polish
+                        'κριτικ',                      // Greek
+                    ];
+                    
+                    // Keywords that indicate NON-review tabs (to avoid wrong clicks)
+                    const excludeKeywords = [
+                        'overview', 'about', 'menu', 'speisekarte', 'karte',
+                        'photos', 'fotos', 'bilder', 'updates', 'contact',
+                        'write', 'كتابة', 'schreiben', 'إضافة'
+                    ];
+                    
+                    function isReviewTab(text, ariaLabel) {
+                        const combined = (text + ' ' + ariaLabel).toLowerCase();
+                        
+                        // Check if it matches any exclude keyword
+                        for (let ex of excludeKeywords) {
+                            if (combined.includes(ex)) return false;
+                        }
+                        
+                        // Check if it matches any review keyword
+                        for (let kw of reviewKeywords) {
+                            if (combined.includes(kw)) return true;
+                        }
+                        
+                        return false;
+                    }
+                    
                     // Find all buttons
                     const buttons = Array.from(document.querySelectorAll('button'));
                     
                     // Method 1: Look for tabs specifically (role="tab")
                     const tabs = buttons.filter(btn => btn.getAttribute('role') === 'tab');
                     if (tabs.length > 0) {
+                        // First pass: look for tab matching review keywords
                         for (let tab of tabs) {
                             const text = (tab.innerText || tab.textContent || '').toLowerCase();
                             const ariaLabel = (tab.getAttribute('aria-label') || '').toLowerCase();
                             
-                            if (text.includes('review') || text.includes('مراجع') || 
-                                ariaLabel.includes('review') || ariaLabel.includes('مراجع')) {
+                            if (isReviewTab(text, ariaLabel)) {
                                 console.log('Found Reviews tab:', tab.innerText);
                                 tab.click();
                                 return { success: true, method: 'reviews_tab', text: tab.innerText };
                             }
                         }
                         
-                        // If no review tab found, click second tab (usually Reviews)
-                        if (tabs.length > 1) {
-                            console.log('Clicking second tab');
-                            tabs[1].click();
-                            return { success: true, method: 'second_tab', text: tabs[1].innerText };
+                        // Second pass: look for tab with a number (review count) that is NOT overview/menu/about
+                        for (let tab of tabs) {
+                            const text = (tab.innerText || tab.textContent || '').trim();
+                            const ariaLabel = (tab.getAttribute('aria-label') || '').toLowerCase();
+                            const combined = (text + ' ' + ariaLabel).toLowerCase();
+                            
+                            // Skip tabs that match known non-review labels
+                            let isExcluded = false;
+                            for (let ex of excludeKeywords) {
+                                if (combined.includes(ex)) { isExcluded = true; break; }
+                            }
+                            if (isExcluded) continue;
+                            
+                            // Check if tab text contains a number (e.g., "Rezensionen\n42")
+                            const hasNumber = /\d+/.test(text);
+                            if (hasNumber) {
+                                console.log('Found tab with number (likely reviews):', text);
+                                tab.click();
+                                return { success: true, method: 'tab_with_count', text: text };
+                            }
                         }
+                        
+                        // DO NOT blindly click second tab - log what's available instead
+                        const tabsInfo = tabs.map(t => (t.innerText || '').substring(0, 30)).join(' | ');
+                        console.log('Available tabs: ' + tabsInfo);
                     }
                     
                     // Method 2: Find button with ONLY "Reviews" text (no names)
@@ -158,9 +242,7 @@ class GoogleMapsReviewsScraper:
                         
                         // Check if it's JUST the reviews text (no newlines = no user names)
                         if (!text.includes('\\n') && text.trim().length < 30) {
-                            const combined = (text + ' ' + ariaLabel).toLowerCase();
-                            if ((combined.includes('مراجع') || combined.includes('review')) && 
-                                !combined.includes('كتابة') && !combined.includes('write')) {
+                            if (isReviewTab(text, ariaLabel)) {
                                 console.log('Found simple reviews button:', text);
                                 btn.click();
                                 return { success: true, method: 'simple_review_button', text: text };
@@ -168,7 +250,24 @@ class GoogleMapsReviewsScraper:
                         }
                     }
                     
-                    return { success: false, buttons_count: buttons.length, tabs_count: tabs.length };
+                    // Method 3: Try clicking on reviews count text (e.g., "42 reviews" or "42 Rezensionen")
+                    const allElements = document.querySelectorAll('button, a, [role="tab"], [role="button"]');
+                    for (let el of allElements) {
+                        const text = (el.innerText || el.textContent || '').toLowerCase();
+                        // Match patterns like "42 reviews", "42 Rezensionen", "42 avis", etc.
+                        const match = text.match(/(\d+)\s+/);
+                        if (match) {
+                            for (let kw of reviewKeywords) {
+                                if (text.includes(kw)) {
+                                    console.log('Found review count element:', el.innerText);
+                                    el.click();
+                                    return { success: true, method: 'review_count_element', text: el.innerText };
+                                }
+                            }
+                        }
+                    }
+                    
+                    return { success: false, buttons_count: buttons.length, tabs_count: tabs ? tabs.length : 0 };
                 }
             """)
             
@@ -236,13 +335,20 @@ class GoogleMapsReviewsScraper:
                 print("✓ Already on reviews view, skipping tab click")
                 return True
             
-            # Try to find and click reviews tab - with more selectors
+            # Try to find and click reviews tab - with more selectors (multi-language)
             reviews_selectors = [
                 'button[aria-label*="Reviews"]',
                 'button[aria-label*="reviews"]',
-                'button[data-tab-index="1"]',  # Usually reviews is the 2nd tab (0-indexed)
+                'button[aria-label*="Rezension"]',
+                'button[aria-label*="Bewertung"]',
+                'button[aria-label*="avis"]',
+                'button[aria-label*="reseña"]',
                 'button:has-text("Reviews")',
                 'button:has-text("reviews")',
+                'button:has-text("Rezensionen")',
+                'button:has-text("Bewertungen")',
+                'button:has-text("Avis")',
+                'button:has-text("Reseñas")',
                 'div[role="tab"]:has-text("Reviews")',
                 '[role="tab"]:has-text("Reviews")',
                 'button[jsaction*="pane.reviewChart"]',
@@ -468,20 +574,32 @@ class GoogleMapsReviewsScraper:
                         const allDivs = document.querySelectorAll('div');
                         let reviewElements = [];
                         
+                        // Multi-language date keywords
+                        const dateKeywords = [
+                            'ago', 'week', 'month', 'day', 'year',       // English
+                            'vor', 'woche', 'monat', 'tag', 'jahr',     // German
+                            'il y a', 'semaine', 'mois', 'jour', 'an',  // French
+                            'hace', 'semana', 'mes', 'día', 'año',      // Spanish
+                            'منذ', 'أسبوع', 'شهر', 'يوم', 'سنة',       // Arabic
+                            'fa', 'settimana', 'mese', 'giorno', 'anno', // Italian
+                            'önce', 'hafta', 'ay', 'gün', 'yıl',        // Turkish
+                        ];
+                        
                         allDivs.forEach(div => {
                             // Check if this div has a star rating indicator
                             const hasStars = div.querySelector('span[role="img"][aria-label*="star"]') ||
                                            div.querySelector('span[aria-label*="stars"]') ||
+                                           div.querySelector('span[aria-label*="Stern"]') ||
+                                           div.querySelector('span[aria-label*="étoile"]') ||
+                                           div.querySelector('span[aria-label*="estrella"]') ||
                                            div.querySelector('[aria-label*="Star rating"]');
                             
-                            // Check if it has date-like text
-                            const text = div.innerText || '';
-                            const hasDate = text.includes('ago') || text.includes('week') || 
-                                          text.includes('month') || text.includes('day') ||
-                                          text.includes('year');
+                            // Check if it has date-like text (multi-language)
+                            const text = (div.innerText || '').toLowerCase();
+                            const hasDate = dateKeywords.some(kw => text.includes(kw));
                             
                             // Check if it has substantial text (likely review content)
-                            const hasContent = text.length > 100;
+                            const hasContent = text.length > 50;
                             
                             if (hasStars && hasDate && hasContent) {
                                 // Make sure it's not already counted (avoid nested divs)
@@ -770,11 +888,11 @@ class GoogleMapsReviewsScraper:
                     
                     # Extract rating - try multiple methods
                     try:
-                        # Method 1: aria-label
-                        rating_elem = await review_elem.query_selector('span[role="img"][aria-label*="star"]')
+                        # Method 1: aria-label (multi-language: star, Stern, étoile, estrella)
+                        rating_elem = await review_elem.query_selector('span[role="img"][aria-label*="star"], span[role="img"][aria-label*="Stern"], span[role="img"][aria-label*="étoile"], span[role="img"][aria-label*="estrella"]')
                         if rating_elem:
                             aria_label = await rating_elem.get_attribute('aria-label')
-                            rating_match = re.search(r'(\d+)\s*star', aria_label, re.IGNORECASE)
+                            rating_match = re.search(r'(\d+)', aria_label)
                             if rating_match:
                                 review_data['rating'] = int(rating_match.group(1))
                         
@@ -791,6 +909,15 @@ class GoogleMapsReviewsScraper:
                     
                     # Extract review date - try multiple selectors
                     try:
+                        date_keywords = [
+                            'ago', 'week', 'month', 'day', 'year',       # English
+                            'vor', 'woche', 'monat', 'tag', 'jahr',     # German
+                            'il y a', 'semaine', 'mois', 'jour', 'an',  # French
+                            'hace', 'semana', 'mes', 'día', 'año',      # Spanish
+                            'منذ', 'أسبوع', 'شهر', 'يوم', 'سنة',       # Arabic
+                            'fa', 'settimana', 'mese', 'giorno', 'anno', # Italian
+                            'önce', 'hafta', 'ay', 'gün', 'yıl',        # Turkish
+                        ]
                         date_selectors = [
                             'span[class*="rsqaWe"]',
                             'span.DU9Pgb',
@@ -800,8 +927,8 @@ class GoogleMapsReviewsScraper:
                             date_elem = await review_elem.query_selector(selector)
                             if date_elem:
                                 text = await date_elem.inner_text()
-                                # Check if it looks like a date
-                                if any(word in text.lower() for word in ['ago', 'week', 'month', 'day', 'year']):
+                                # Check if it looks like a date (multi-language)
+                                if any(word in text.lower() for word in date_keywords):
                                     review_data['review_date'] = text.strip()
                                     break
                     except:
@@ -1177,37 +1304,55 @@ class GoogleMapsReviewsScraper:
                 print(f"⚠️ Could not extract place name: {e}")
             
             # Take initial screenshot
-            if not self.headless:
-                try:
-                    await self.page.screenshot(path='debug_1_initial.png', full_page=True)
-                    print("📸 Screenshot: debug_1_initial.png")
-                except:
-                    pass
+            try:
+                await self.page.screenshot(path='debug_1_initial.png', full_page=True)
+                print("📸 Screenshot: debug_1_initial.png")
+            except:
+                pass
             
             # CRITICAL FIX: Use JavaScript to directly click the Reviews tab
             print("🔍 Using JavaScript to find and click Reviews tab...")
             reviews_opened = await self._force_open_reviews_with_js()
             
             # Take screenshot after attempting to open reviews
-            if not self.headless:
-                try:
-                    await self.page.screenshot(path='debug_2_after_reviews_click.png', full_page=True)
-                    print("📸 Screenshot: debug_2_after_reviews_click.png")
-                except:
-                    pass
+            try:
+                await self.page.screenshot(path='debug_2_after_reviews_click.png', full_page=True)
+                print("📸 Screenshot: debug_2_after_reviews_click.png")
+            except:
+                pass
             
             if not reviews_opened:
                 print("⚠️ Could not open reviews tab, trying fallback method...")
                 # Fallback: Try the old click method
                 reviews_opened = await self._click_reviews_tab()
             
+            if not reviews_opened:
+                # Last resort: Force reload with hl=en to ensure English interface
+                print("🔄 Retrying with forced English language reload...")
+                current = self.page.url
+                # Strip any existing hl= param and add hl=en
+                import urllib.parse
+                parsed = urllib.parse.urlparse(current)
+                params = urllib.parse.parse_qs(parsed.query)
+                params['hl'] = ['en']
+                new_query = urllib.parse.urlencode(params, doseq=True)
+                english_url = urllib.parse.urlunparse(parsed._replace(query=new_query))
+                
+                await self.page.goto(english_url, wait_until='domcontentloaded', timeout=60000)
+                await asyncio.sleep(5)
+                await self._handle_consent_dialog()
+                await asyncio.sleep(2)
+                
+                reviews_opened = await self._force_open_reviews_with_js()
+                if not reviews_opened:
+                    reviews_opened = await self._click_reviews_tab()
+            
             # Take final screenshot
-            if not self.headless:
-                try:
-                    await self.page.screenshot(path='debug_3_final.png', full_page=True)
-                    print("📸 Screenshot: debug_3_final.png")
-                except:
-                    pass
+            try:
+                await self.page.screenshot(path='debug_3_final.png', full_page=True)
+                print("📸 Screenshot: debug_3_final.png")
+            except:
+                pass
             
             # Scroll to load more reviews
             await self._scroll_reviews(max_reviews)
