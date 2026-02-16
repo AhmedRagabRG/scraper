@@ -12,7 +12,7 @@ class ScraperConfig:
     """Main configuration class."""
     
     # Proxy settings
-    USE_PROXIES = os.getenv('USE_PROXIES', 'false').lower() == 'true'
+    USE_PROXIES = True
     
     # User agents for rotation
     USER_AGENTS = [

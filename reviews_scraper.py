@@ -147,31 +147,31 @@ class GoogleMapsReviewsScraper:
                 () => {
                     // Multi-language keywords for "Reviews" tab
                     const reviewKeywords = [
-                        'review', 'reviews',           // English
-                        'مراجع', 'تقييم',              // Arabic
-                        'rezension', 'bewertung',      // German
-                        'avis',                        // French
-                        'reseñ', 'opiniones',          // Spanish
-                        'recens', 'valutazion',        // Italian
-                        'avaliação', 'avaliações',     // Portuguese
-                        'yorum',                       // Turkish
-                        'отзыв',                       // Russian
-                        'recenze',                     // Czech
-                        'beoordelingen',               // Dutch
-                        'リ\u30D3\u30E5\u30FC', 'クチコミ',              // Japanese
-                        '리뷰',                        // Korean
-                        '评论',                        // Chinese
-                        'đánh giá',                    // Vietnamese
-                        'ulasan',                      // Malay/Indonesian
-                        'recenzj',                     // Polish
-                        'κριτικ',                      // Greek
+                        'review', 'reviews',
+                        '\u0645\u0631\u0627\u062C\u0639', '\u062A\u0642\u064A\u064A\u0645',
+                        'rezension', 'bewertung',
+                        'avis',
+                        'rese\u00F1', 'opiniones',
+                        'recens', 'valutazion',
+                        'avalia\u00E7\u00E3o', 'avalia\u00E7\u00F5es',
+                        'yorum',
+                        '\u043E\u0442\u0437\u044B\u0432',
+                        'recenze',
+                        'beoordelingen',
+                        '\u30EC\u30D3\u30E5\u30FC', '\u30AF\u30C1\u30B3\u30DF',
+                        '\uB9AC\uBDF0',
+                        '\u8BC4\u8BBA',
+                        '\u0111\u00E1nh gi\u00E1',
+                        'ulasan',
+                        'recenzj',
+                        '\u03BA\u03C1\u03B9\u03C4\u03B9\u03BA',
                     ];
                     
                     // Keywords that indicate NON-review tabs (to avoid wrong clicks)
                     const excludeKeywords = [
                         'overview', 'about', 'menu', 'speisekarte', 'karte',
                         'photos', 'fotos', 'bilder', 'updates', 'contact',
-                        'write', 'كتابة', 'schreiben', 'إضافة'
+                        'write', '\u0643\u062A\u0627\u0628\u0629', 'schreiben', '\u0625\u0636\u0627\u0641\u0629'
                     ];
                     
                     function isReviewTab(text, ariaLabel) {
@@ -222,7 +222,7 @@ class GoogleMapsReviewsScraper:
                             if (isExcluded) continue;
                             
                             // Check if tab text contains a number (e.g., "Rezensionen\n42")
-                            const hasNumber = /\d+/.test(text);
+                            const hasNumber = /\\d+/.test(text);
                             if (hasNumber) {
                                 console.log('Found tab with number (likely reviews):', text);
                                 tab.click();
@@ -255,7 +255,7 @@ class GoogleMapsReviewsScraper:
                     for (let el of allElements) {
                         const text = (el.innerText || el.textContent || '').toLowerCase();
                         // Match patterns like "42 reviews", "42 Rezensionen", "42 avis", etc.
-                        const match = text.match(/(\d+)\s+/);
+                        const match = text.match(/(\\d+)\\s+/);
                         if (match) {
                             for (let kw of reviewKeywords) {
                                 if (text.includes(kw)) {
@@ -576,13 +576,13 @@ class GoogleMapsReviewsScraper:
                         
                         // Multi-language date keywords
                         const dateKeywords = [
-                            'ago', 'week', 'month', 'day', 'year',       // English
-                            'vor', 'woche', 'monat', 'tag', 'jahr',     // German
-                            'il y a', 'semaine', 'mois', 'jour', 'an',  // French
-                            'hace', 'semana', 'mes', 'día', 'año',      // Spanish
-                            'منذ', 'أسبوع', 'شهر', 'يوم', 'سنة',       // Arabic
-                            'fa', 'settimana', 'mese', 'giorno', 'anno', // Italian
-                            'önce', 'hafta', 'ay', 'gün', 'yıl',        // Turkish
+                            'ago', 'week', 'month', 'day', 'year',
+                            'vor', 'woche', 'monat', 'tag', 'jahr',
+                            'il y a', 'semaine', 'mois', 'jour', 'an',
+                            'hace', 'semana', 'mes', 'd\\u00EDa', 'a\\u00F1o',
+                            '\\u0645\\u0646\\u0630', '\\u0623\\u0633\\u0628\\u0648\\u0639', '\\u0634\\u0647\\u0631', '\\u064A\\u0648\\u0645', '\\u0633\\u0646\\u0629',
+                            'fa', 'settimana', 'mese', 'giorno', 'anno',
+                            '\\u00F6nce', 'hafta', 'ay', 'g\\u00FCn', 'y\\u0131l',
                         ];
                         
                         allDivs.forEach(div => {
@@ -590,8 +590,6 @@ class GoogleMapsReviewsScraper:
                             const hasStars = div.querySelector('span[role="img"][aria-label*="star"]') ||
                                            div.querySelector('span[aria-label*="stars"]') ||
                                            div.querySelector('span[aria-label*="Stern"]') ||
-                                           div.querySelector('span[aria-label*="étoile"]') ||
-                                           div.querySelector('span[aria-label*="estrella"]') ||
                                            div.querySelector('[aria-label*="Star rating"]');
                             
                             // Check if it has date-like text (multi-language)
@@ -733,17 +731,50 @@ class GoogleMapsReviewsScraper:
                                 }
                             }
                             
-                            // Strategy 3: Find by checking parent structure (reviews are usually in right panel)
+                            // Strategy 3: Find scrollable parent of a review element
+                            if (!reviewsFeed) {
+                                const firstReview = document.querySelector('div[data-review-id]') || document.querySelector('div.jftiEf');
+                                if (firstReview) {
+                                    let parent = firstReview.parentElement;
+                                    while (parent && parent !== document.body) {
+                                        const style = window.getComputedStyle(parent);
+                                        const isScrollable = (style.overflowY === 'auto' || style.overflowY === 'scroll') 
+                                                          && parent.scrollHeight > parent.clientHeight;
+                                        if (isScrollable) {
+                                            reviewsFeed = parent;
+                                            method = 'scrollable_parent';
+                                            break;
+                                        }
+                                        parent = parent.parentElement;
+                                    }
+                                }
+                            }
+                            
+                            // Strategy 4: Find any div with class m6QErb (common Google Maps scrollable panel)
+                            if (!reviewsFeed) {
+                                const panels = document.querySelectorAll('.m6QErb');
+                                for (let div of panels) {
+                                    if (div.scrollHeight > div.clientHeight + 100) {
+                                        const hasReviews = div.querySelector('div[data-review-id]') || 
+                                                          div.querySelector('div.jftiEf');
+                                        if (hasReviews) {
+                                            reviewsFeed = div;
+                                            method = 'm6QErb_panel';
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Strategy 5: Find by checking parent structure (reviews are usually in right panel)
                             if (!reviewsFeed) {
                                 const allScrollable = document.querySelectorAll('div[style*="overflow"]');
                                 for (let div of allScrollable) {
                                     const hasReviews = div.querySelector('div[data-review-id]') || 
                                                       div.querySelector('div.jftiEf');
-                                    const rect = div.getBoundingClientRect();
-                                    // Check if it's on the right side of screen (reviews panel)
-                                    if (hasReviews && rect.left > window.innerWidth / 3) {
+                                    if (hasReviews) {
                                         reviewsFeed = div;
-                                        method = 'right_panel';
+                                        method = 'overflow_div';
                                         break;
                                     }
                                 }
