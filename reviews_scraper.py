@@ -28,10 +28,13 @@ class GoogleMapsReviewsScraper:
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self.playwright = None
+        self._used_proxies = set()  # Track failed proxies to avoid reuse
 
-    async def _setup_browser(self):
+    async def _setup_browser(self, exclude_proxy: Optional[str] = None):
         """Initialize browser with stealth configurations."""
-        playwright = await async_playwright().start()
+        if not self.playwright:
+            self.playwright = await async_playwright().start()
         
         # Setup proxy if available
         launch_options = {
@@ -44,22 +47,25 @@ class GoogleMapsReviewsScraper:
             ]
         }
         
-        proxy_url = None
+        self._current_proxy = None
         if ScraperConfig.USE_PROXIES:
-            proxy_url = proxy_config.get_random_proxy()
-            if proxy_url:
+            # Try to get a proxy that hasn't failed yet
+            available_proxies = [p for p in proxy_config.proxies if p not in self._used_proxies]
+            if available_proxies:
+                proxy_url = random.choice(available_proxies)
                 proxy_dict = proxy_config._parse_proxy_url(proxy_url)
                 if proxy_dict:
                     launch_options['proxy'] = proxy_dict
+                    self._current_proxy = proxy_url
                     print(f"🌐 Using proxy: {proxy_dict['server']}")
                 else:
                     print("⚠️ Failed to parse proxy URL, continuing without proxy")
             else:
-                print("⚠️ USE_PROXIES=true but no proxies available")
+                print("⚠️ All proxies exhausted or none available, continuing without proxy")
         else:
             print("ℹ️ Proxies disabled (set USE_PROXIES=true to enable)")
         
-        self.browser = await playwright.chromium.launch(**launch_options)
+        self.browser = await self.playwright.chromium.launch(**launch_options)
 
         self.context = await self.browser.new_context(
             viewport={'width': 1920, 'height': 1080},
@@ -111,6 +117,37 @@ class GoogleMapsReviewsScraper:
                 get: () => ['en-US', 'en'],
             });
         """)
+
+    async def _check_for_captcha(self) -> bool:
+        """Check if the page shows a CAPTCHA or is blocked by Google."""
+        try:
+            page_content = await self.page.content()
+            page_url = self.page.url
+            page_lower = page_content.lower()
+            
+            captcha_indicators = [
+                'recaptcha', 'g-recaptcha', 'captcha',
+                'unusual traffic', 'automated queries',
+                'sorry/index', 'ipv4.google.com/sorry',
+                'detected unusual traffic',
+                'are not a robot', 'verify you are human',
+                'blocked', 'access denied',
+            ]
+            
+            for indicator in captcha_indicators:
+                if indicator in page_lower or indicator in page_url.lower():
+                    print(f"🚫 Detected block indicator: '{indicator}'")
+                    try:
+                        await self.page.screenshot(path='debug_captcha.png', full_page=True)
+                        print("📸 Saved CAPTCHA screenshot: debug_captcha.png")
+                    except:
+                        pass
+                    return True
+            
+            return False
+        except Exception as e:
+            print(f"⚠️ Error checking for CAPTCHA: {e}")
+            return False
 
     async def _handle_consent_dialog(self):
         """Handle Google's cookie consent dialog."""
@@ -1283,120 +1320,165 @@ class GoogleMapsReviewsScraper:
         place_name = None
         place_url = maps_url
         
-        try:
-            # Setup browser
-            await self._setup_browser()
-            
-            # Force English language by adding hl=en parameter to URL
-            if '?' in maps_url:
-                if 'hl=' not in maps_url:
-                    maps_url = maps_url + '&hl=en'
-            else:
-                maps_url = maps_url + '?hl=en'
-            
-            # Navigate to URL
-            print(f"🌐 Navigating to Google Maps place...")
-            await self.page.goto(maps_url, wait_until='domcontentloaded', timeout=60000)
-            await asyncio.sleep(4)
-            
-            # Handle consent first
-            await self._handle_consent_dialog()
-            await asyncio.sleep(2)
-            
-            # Get current URL (after redirects)
-            current_url = self.page.url
-            place_url = current_url
-            print(f"📍 Current URL: {current_url}")
-            
-            # Extract place name
+        # Force English language by adding hl=en parameter to URL
+        if '?' in maps_url:
+            if 'hl=' not in maps_url:
+                maps_url = maps_url + '&hl=en'
+        else:
+            maps_url = maps_url + '?hl=en'
+        
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
             try:
-                place_name = await self.page.evaluate("""
-                    () => {
-                        // Try multiple selectors for place name
-                        const selectors = [
-                            'h1',
-                            'h1[class*="fontHeadline"]',
-                            '[role="main"] h1',
-                            'div[role="main"] h1'
-                        ];
-                        
-                        for (let selector of selectors) {
-                            const elem = document.querySelector(selector);
-                            if (elem && elem.innerText) {
-                                return elem.innerText.trim();
-                            }
-                        }
-                        return null;
-                    }
-                """)
-                if place_name:
-                    print(f"🏪 Place Name: {place_name}")
-            except Exception as e:
-                print(f"⚠️ Could not extract place name: {e}")
-            
-            # Take initial screenshot
-            try:
-                await self.page.screenshot(path='debug_1_initial.png', full_page=True)
-                print("📸 Screenshot: debug_1_initial.png")
-            except:
-                pass
-            
-            # CRITICAL FIX: Use JavaScript to directly click the Reviews tab
-            print("🔍 Using JavaScript to find and click Reviews tab...")
-            reviews_opened = await self._force_open_reviews_with_js()
-            
-            # Take screenshot after attempting to open reviews
-            try:
-                await self.page.screenshot(path='debug_2_after_reviews_click.png', full_page=True)
-                print("📸 Screenshot: debug_2_after_reviews_click.png")
-            except:
-                pass
-            
-            if not reviews_opened:
-                print("⚠️ Could not open reviews tab, trying fallback method...")
-                # Fallback: Try the old click method
-                reviews_opened = await self._click_reviews_tab()
-            
-            if not reviews_opened:
-                # Last resort: Force reload with hl=en to ensure English interface
-                print("🔄 Retrying with forced English language reload...")
-                current = self.page.url
-                # Strip any existing hl= param and add hl=en
-                import urllib.parse
-                parsed = urllib.parse.urlparse(current)
-                params = urllib.parse.parse_qs(parsed.query)
-                params['hl'] = ['en']
-                new_query = urllib.parse.urlencode(params, doseq=True)
-                english_url = urllib.parse.urlunparse(parsed._replace(query=new_query))
+                # Setup browser (will pick a different proxy on retry)
+                await self._setup_browser()
                 
-                await self.page.goto(english_url, wait_until='domcontentloaded', timeout=60000)
-                await asyncio.sleep(5)
+                # Navigate to URL with retry
+                print(f"🌐 Navigating to Google Maps place... (attempt {attempt}/{max_retries})")
+                try:
+                    await self.page.goto(maps_url, wait_until='domcontentloaded', timeout=90000)
+                except Exception as nav_error:
+                    error_msg = str(nav_error).lower()
+                    if 'timeout' in error_msg or 'net::' in error_msg:
+                        print(f"⚠️ Navigation failed (proxy may be blocked/slow): {nav_error}")
+                        if self._current_proxy:
+                            self._used_proxies.add(self._current_proxy)
+                            print(f"🔄 Blacklisting proxy and retrying with a different one...")
+                        await self.cleanup()
+                        if attempt < max_retries:
+                            await asyncio.sleep(3)
+                            continue
+                        else:
+                            raise
+                    else:
+                        raise
+                
+                await asyncio.sleep(4)
+                
+                # Handle consent first
                 await self._handle_consent_dialog()
                 await asyncio.sleep(2)
                 
+                # Check for CAPTCHA / block page
+                is_blocked = await self._check_for_captcha()
+                if is_blocked:
+                    print(f"🚫 CAPTCHA/block detected!")
+                    if self._current_proxy:
+                        self._used_proxies.add(self._current_proxy)
+                        print(f"🔄 Blacklisting proxy and retrying...")
+                    await self.cleanup()
+                    if attempt < max_retries:
+                        await asyncio.sleep(5)
+                        continue
+                    else:
+                        print("❌ All retries exhausted due to CAPTCHA/blocks")
+                        raise Exception("Google CAPTCHA/block detected after all retries")
+                
+                # Get current URL (after redirects)
+                current_url = self.page.url
+                place_url = current_url
+                print(f"📍 Current URL: {current_url}")
+            
+                # Extract place name
+                try:
+                    place_name = await self.page.evaluate("""
+                        () => {
+                            // Try multiple selectors for place name
+                            const selectors = [
+                                'h1',
+                                'h1[class*="fontHeadline"]',
+                                '[role="main"] h1',
+                                'div[role="main"] h1'
+                            ];
+                            
+                            for (let selector of selectors) {
+                                const elem = document.querySelector(selector);
+                                if (elem && elem.innerText) {
+                                    return elem.innerText.trim();
+                                }
+                            }
+                            return null;
+                        }
+                    """)
+                    if place_name:
+                        print(f"🏪 Place Name: {place_name}")
+                except Exception as e:
+                    print(f"⚠️ Could not extract place name: {e}")
+                
+                # Take initial screenshot
+                try:
+                    await self.page.screenshot(path='debug_1_initial.png', full_page=True)
+                    print("📸 Screenshot: debug_1_initial.png")
+                except:
+                    pass
+                
+                # CRITICAL FIX: Use JavaScript to directly click the Reviews tab
+                print("🔍 Using JavaScript to find and click Reviews tab...")
                 reviews_opened = await self._force_open_reviews_with_js()
+                
+                # Take screenshot after attempting to open reviews
+                try:
+                    await self.page.screenshot(path='debug_2_after_reviews_click.png', full_page=True)
+                    print("📸 Screenshot: debug_2_after_reviews_click.png")
+                except:
+                    pass
+                
                 if not reviews_opened:
+                    print("⚠️ Could not open reviews tab, trying fallback method...")
+                    # Fallback: Try the old click method
                     reviews_opened = await self._click_reviews_tab()
+                
+                if not reviews_opened:
+                    # Last resort: Force reload with hl=en to ensure English interface
+                    print("🔄 Retrying with forced English language reload...")
+                    current = self.page.url
+                    # Strip any existing hl= param and add hl=en
+                    import urllib.parse
+                    parsed = urllib.parse.urlparse(current)
+                    params = urllib.parse.parse_qs(parsed.query)
+                    params['hl'] = ['en']
+                    new_query = urllib.parse.urlencode(params, doseq=True)
+                    english_url = urllib.parse.urlunparse(parsed._replace(query=new_query))
+                    
+                    await self.page.goto(english_url, wait_until='domcontentloaded', timeout=60000)
+                    await asyncio.sleep(5)
+                    await self._handle_consent_dialog()
+                    await asyncio.sleep(2)
+                    
+                    reviews_opened = await self._force_open_reviews_with_js()
+                    if not reviews_opened:
+                        reviews_opened = await self._click_reviews_tab()
+                
+                # Take final screenshot
+                try:
+                    await self.page.screenshot(path='debug_3_final.png', full_page=True)
+                    print("📸 Screenshot: debug_3_final.png")
+                except:
+                    pass
+                
+                # Scroll to load more reviews
+                await self._scroll_reviews(max_reviews)
+                
+                # Extract reviews
+                reviews = await self._extract_reviews(max_reviews, on_review_callback)
+                
+                # Success - break out of retry loop
+                break
+                
+            except Exception as e:
+                print(f"❌ Error during scraping (attempt {attempt}/{max_retries}): {e}")
+                await self.cleanup()
+                if attempt < max_retries:
+                    if self._current_proxy:
+                        self._used_proxies.add(self._current_proxy)
+                    print(f"🔄 Retrying with different proxy...")
+                    await asyncio.sleep(3)
+                    continue
+                else:
+                    raise
             
-            # Take final screenshot
-            try:
-                await self.page.screenshot(path='debug_3_final.png', full_page=True)
-                print("📸 Screenshot: debug_3_final.png")
-            except:
-                pass
-            
-            # Scroll to load more reviews
-            await self._scroll_reviews(max_reviews)
-            
-            # Extract reviews
-            reviews = await self._extract_reviews(max_reviews, on_review_callback)
-            
-        except Exception as e:
-            print(f"❌ Error during scraping: {e}")
-            raise
-        
-        finally:
-            await self.cleanup()
+            finally:
+                await self.cleanup()
         
         return {
             'place_name': place_name,
@@ -1406,10 +1488,19 @@ class GoogleMapsReviewsScraper:
 
     async def cleanup(self):
         """Close browser and cleanup resources."""
-        if self.context:
-            await self.context.close()
-        if self.browser:
-            await self.browser.close()
+        try:
+            if self.context:
+                await self.context.close()
+                self.context = None
+        except:
+            pass
+        try:
+            if self.browser:
+                await self.browser.close()
+                self.browser = None
+        except:
+            pass
+        self.page = None
 
 
 async def scrape_google_maps_reviews(maps_url: str, headless: bool = True, max_reviews: Optional[int] = None, on_review_callback=None) -> Dict:
